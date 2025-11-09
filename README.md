@@ -27,14 +27,17 @@
 ### Linux / macOS
 ```bash
 python3 escape_terminal.py
-Windows
-bash
-Copiar código
+````
+### Windows
+````bash
 pip install windows-curses
+````
+```bash
 python escape_terminal.py
+````
 Nota: En Windows, curses no está incluido por defecto, por eso se requiere windows-curses.
-```
-## 🆕 Características
+
+## Características
 - Generación procedural de niveles con camino garantizado entre inicio y salida.
 
   - Enemigos con detección de jugador y movimiento inteligente.
