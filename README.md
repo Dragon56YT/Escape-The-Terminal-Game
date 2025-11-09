@@ -1,81 +1,71 @@
-\# Escape the Terminal
+# Escape the Terminal
 
 ![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)
-
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-\*\*Escape the Terminal\*\* es un roguelike de un solo archivo para la terminal, escrito en Python. Enfréntate a enemigos, recoge munición y alcanza la salida mientras avanzas por niveles generados proceduralmente.
+**Escape the Terminal** es un roguelike de un solo archivo para la terminal, escrito en Python. Enfréntate a enemigos, recoge munición y alcanza la salida mientras avanzas por niveles generados proceduralmente.
 
-\---
+---
 
-\## 🎮 Controles
+## 🎮 Controles
 
-- \*\*Movimiento:\*\* `WASD` o flechas
-- \*\*Disparar:\*\*
-- Arriba: `I`
-- Abajo: `K`
-- Izquierda: `J`
-- Derecha: `L`
-- \*\*Guardar partida:\*\* `P`
-- \*\*Salir al menú:\*\* `Q` (en el juego)
-- \*\*Menú:\*\* flechas `↑↓` + `Enter`
+| Acción               | Teclas                  |
+|----------------------|------------------------|
+| Movimiento           | `WASD` o flechas       |
+| Disparar ↑           | `I`                    |
+| Disparar ↓           | `K`                    |
+| Disparar ←           | `J`                    |
+| Disparar →           | `L`                    |
+| Guardar partida      | `P`                    |
+| Salir al menú        | `Q`                    |
+| Navegar menú         | Flechas `↑↓` + `Enter`|
 
-\---
+---
 
-\## 🚀 Cómo ejecutar
+## 🚀 Cómo ejecutar
 
-\### Linux / macOS
-
-\```bash
-
-python3 escape\_terminal.py
-
+### Linux / macOS
+```bash
+python3 escape_terminal.py
 Windows
-
+bash
+Copiar código
 pip install windows-curses
-
-python escape\_terminal.py
-
-
+python escape_terminal.py
 Nota: En Windows, curses no está incluido por defecto, por eso se requiere windows-curses.
+```
+## 🆕 Características
+- Generación procedural de niveles con camino garantizado entre inicio y salida.
 
-🆕 Características
+  - Enemigos con detección de jugador y movimiento inteligente.
 
-Generación procedural de niveles con garantía de camino entre inicio y salida.
+  - Proyectiles que interactúan con enemigos y paredes.
 
-Enemigos con detección de jugador y movimiento inteligente.
+  - Semilla (seed) personalizable para efectos especiales:
 
-Proyectiles que interactúan con enemigos y paredes.
+    - H4CK3R – munición extra
 
-Semilla (seed) personalizable para efectos especiales:
+    - ADMIN – enemigos más rápidos
 
-H4CK3R: munición extra.
+    - SAFE – menos enemigos iniciales
 
-ADMIN: enemigos más rápidos.
+    - MATRIX – efecto visual/temático
 
-SAFE: menos enemigos iniciales.
+    - GOD – HP del jugador extremadamente alto
 
-MATRIX: efecto visual/temático.
+  - HUD con HP, munición, nivel y seed actual.
 
-GOD: HP del jugador extremadamente alto.
+  - Mensajes de lore aleatorios por nivel.
 
-HUD con HP, munición, nivel y seed actual.
+  - Guardado y carga de partidas seguras en JSON.
+---
+## 📦 Archivos Generados
+  - escape_terminal.py – juego principal en un solo archivo
 
-Mensajes de lore aleatorios por nivel.
-
-Guardado y carga de partidas seguros en JSON.
-
-
-📦 Archivos Generados
-
-escape\_terminal.py – juego principal en un solo archivo.
-
-escape\_terminal\_save.json – archivo de guardado automático (creado al guardar).
-
-📄 Licencia
-
-Este proyecto es open-source y puede modificarse libremente.
-
-✨ Créditos
-
-Desarrollo original por Dragon56
+  - escape_terminal_save.json – archivo de guardado automático (creado al guardar)
+---
+## 📄 Licencia
+Este proyecto es open-source y puede modificarse libremente bajo la licencia MIT.
+---
+## ✨ Créditos
+  - Desarrollo original por Dragon56
