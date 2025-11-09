@@ -71,4 +71,4 @@ Nota: En Windows, curses no está incluido por defecto, por eso se requiere inst
 Este proyecto es open-source y puede modificarse libremente bajo la licencia MIT.
 ---
 ## ✨ Créditos
-  - Desarrollo original por Dragon56
+  - Desarrollo original por Dragon56YT
