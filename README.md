@@ -35,7 +35,7 @@ pip install windows-curses
 ```bash
 python escape_terminal.py
 ````
-Nota: En Windows, curses no está incluido por defecto, por eso se requiere windows-curses.
+Nota: En Windows, curses no está incluido por defecto, por eso se requiere instalar windows-curses.
 
 ## Características
 - Generación procedural de niveles con camino garantizado entre inicio y salida.
