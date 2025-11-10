@@ -24,7 +24,14 @@ Enfréntate a múltiples tipos de enemigos, recoge power-ups y munición, y alca
 ---
 
 # 🚀 Cómo ejecutar
-
+- Windows:
+```bash
+pip install windows-curses
+````
+```bash
+python escape_terminal.py
+````
+- Linux/ macOS
 ```bash
 python escape_terminal.py
 ````
@@ -32,9 +39,11 @@ python escape_terminal.py
 
 - Windows / Linux / macOS
 
-- Compatible con Python 3.8+
+- Compatible con Python 3.6+ mínimo
 
 - Requiere terminal con soporte para colores y curses
+
+- En windows es necesario tener instalado `windows-curses`
 ---
 # ✨ Características Principales
 - 3 tipos de enemigos con comportamientos únicos:
