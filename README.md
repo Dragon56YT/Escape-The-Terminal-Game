@@ -1,6 +1,6 @@
 # Escape The Terminal
 
-![Python](https://img.shields.io/badge/Python-3.6%2B%20(min%2C%203.8%2Brecommended)-blue)
+![Python](https://img.shields.io/badge/Python-3.6%2B%20(min)%20|%203.10%2B%20(recommended)-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Version](https://img.shields.io/badge/version-v0.3--alpha-orange)
 
