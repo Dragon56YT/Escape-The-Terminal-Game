@@ -2,73 +2,98 @@
 
 ![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-v0.3--alpha-orange)
 
-**Escape the Terminal** es un roguelike de un solo archivo para la terminal, escrito en Python. Enfréntate a enemigos, recoge munición y alcanza la salida mientras avanzas por niveles generados proceduralmente.
+**Escape the Terminal** es un roguelike de un solo archivo para la terminal, escrito en Python.  
+Enfréntate a múltiples tipos de enemigos, recoge power-ups y munición, y alcanza la salida mientras avanzas por niveles generados proceduralmente.
 
 ---
 
 ## 🎮 Controles
 
-| Acción               | Teclas                  |
-|----------------------|------------------------|
-| Movimiento           | `WASD` o flechas       |
-| Disparar ↑           | `I`                    |
-| Disparar ↓           | `K`                    |
-| Disparar ←           | `J`                    |
-| Disparar →           | `L`                    |
-| Guardar partida      | `P`                    |
-| Salir al menú        | `Q`                    |
-| Navegar menú         | Flechas `↑↓` + `Enter`|
+| Acción            | Teclas              |
+|------------------|---------------------|
+| **Movimiento**    | Flechas (↑↓←→)      |
+| **Disparar ↑**    | `W`                 |
+| **Disparar ↓**    | `S`                 |
+| **Disparar ←**    | `A`                 |
+| **Disparar →**    | `D`                 |
+| **Pausa/Menú**    | `P`                 |
+| **Navegar menús** | Flechas + `Enter`   |
 
 ---
 
-## 🚀 Cómo ejecutar
+# 🚀 Cómo ejecutar
 
-### Linux / macOS
-```bash
-python3 escape_terminal.py
-````
-### Windows
-````bash
-pip install windows-curses
-````
 ```bash
 python escape_terminal.py
 ````
-Nota: En Windows, curses no está incluido por defecto, por eso se requiere instalar windows-curses.
+## Compatibilidad
 
-## Características
-- Generación procedural de niveles con camino garantizado entre inicio y salida.
+- Windows / Linux / macOS
 
-  - Enemigos con detección de jugador y movimiento inteligente.
+- Compatible con Python 3.8+
 
-  - Proyectiles que interactúan con enemigos y paredes.
-
-  - Semilla (seed) personalizable para efectos especiales:
-
-    - H4CK3R – munición extra
-
-    - ADMIN – enemigos más rápidos
-
-    - SAFE – menos enemigos iniciales
-
-    - MATRIX – efecto visual/temático
-
-    - GOD – HP del jugador extremadamente alto
-
-  - HUD con HP, munición, nivel y seed actual.
-
-  - Mensajes de lore aleatorios por nivel.
-
-  - Guardado y carga de partidas seguras en JSON.
+- Requiere terminal con soporte para colores y curses
 ---
-## 📦 Archivos Generados
-  - escape_terminal.py – juego principal en un solo archivo
+# ✨ Características Principales
+- 3 tipos de enemigos con comportamientos únicos:
 
-  - escape_terminal_save.json – archivo de guardado automático (creado al guardar)
+  - Básicos (E): Movimiento estándar
+
+  - Tanques (T): 2 puntos de vida, más lentos
+
+  - Francotiradores (S): Disparan a distancia
+
+# 🔋 Sistema de Power-ups
+- 4 tipos de power-ups con efectos temporales:
+
+  - Salud (+): Restaura 1 punto de vida
+
+  - Ráfaga (R): Disparo rápido por 10s
+
+  - Escudo (S): Inmunidad temporal por 8s
+
+  - Invencibilidad (I): Inmunidad total por 5s
+
+# 📊 Progresión y Puntuación
+
+  - Sistema de puntuación por enemigos eliminados
+
+  - Bonus por completar niveles: 1000 × nivel
+
+  - Estadísticas detalladas de bajas
+
+  - Tiempo de juego mostrado
+
+  - Vida máxima aumenta +1 cada 3 niveles
+
+# 🗺️ Generación de Niveles
+- Generación procedural con camino garantizado entre inicio y salida
+
+    - 10 niveles con dificultad progresiva
+
+    - Distancia mínima de aparición de enemigos
+
+    - Verificación de alcanzabilidad de todos los elementos
 ---
-## 📄 Licencia
-Este proyecto es open-source y puede modificarse libremente bajo la licencia MIT.
+# 🔮 Semillas Especiales
+  - GOD → 999 HP (modo dios)
+
+  - H4CK3R → +8 munición inicial
+
+  - Sistema expandible para futuras seeds.
 ---
-## ✨ Créditos
-  - Desarrollo original por Dragon56YT
+# 📦 Archivos
+- escape_terminal.py — Juego principal en un solo archivo
+
+- escape_terminal_save.json — Guardado automático
+---
+# 📄 Licencia
+## Este proyecto es open-source bajo licencia MIT.
+
+# ✨ Créditos
+## Desarrollo original: Dragon56YT
+---
+
+## ¡Alerta! Juego en desarrollo, puede contener errores y pude faltar contenido
