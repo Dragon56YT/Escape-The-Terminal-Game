@@ -2,7 +2,7 @@
 Escape the Terminal - single-file Python roguelike for the terminal
 
 By: Dragon56YT
-Version: v0.3-alpha
+Version: v0.4-alpha
 """
 
 import curses
@@ -31,6 +31,7 @@ HEALTH_CHAR = '+'
 RAPIDFIRE_CHAR = 'R'
 SHIELD_CHAR = 'S'
 INVINCIBILITY_CHAR = 'I'
+SPEED_CHAR = 'V'
 
 # MOVIMIENTO: SOLO flechas
 MOVE_KEYS = {
@@ -56,7 +57,8 @@ MAX_LEVEL = 10
 RAPIDFIRE_DURATION = 10.0
 SHIELD_DURATION = 8.0
 INVINCIBILITY_DURATION = 5.0
-SNIPER_COOLDOWN = 5.0
+SPEED_DURATION = 8.0
+SNIPER_COOLDOWN = 3.0
 MAX_BULLETS = 50
 
 def to_xy(pos):
@@ -151,6 +153,7 @@ class Player:
         self.rapidfire_until = 0.0
         self.shield_until = 0.0
         self.invincible_until = 0.0
+        self.speed_until = 0.0
         self.score = 0
         self.enemies_killed = {'normal': 0, 'tank': 0, 'sniper': 0}
 
@@ -165,6 +168,9 @@ class Player:
 
     def has_invincibility(self):
         return time.time() < self.invincible_until
+
+    def has_speed(self):
+        return time.time() < self.speed_until
 
     def take_damage(self, amount=1):
         if not self.has_shield() and not self.has_invincibility():
@@ -184,6 +190,7 @@ class Player:
             'rapidfire_until': self.rapidfire_until,
             'shield_until': self.shield_until,
             'invincible_until': self.invincible_until,
+            'speed_until': self.speed_until,
             'score': self.score,
             'max_hp': self.max_hp,
             'enemies_killed': self.enemies_killed
@@ -196,6 +203,7 @@ class Player:
         p.rapidfire_until = d.get('rapidfire_until', 0.0)
         p.shield_until = d.get('shield_until', 0.0)
         p.invincible_until = d.get('invincible_until', 0.0)
+        p.speed_until = d.get('speed_until', 0.0)
         p.score = d.get('score', 0)
         p.max_hp = d.get('max_hp', 3)
         p.enemies_killed = d.get('enemies_killed', {'normal': 0, 'tank': 0, 'sniper': 0})
@@ -213,6 +221,7 @@ class Enemy:
             self.health = 2
             self.score_value = 300
             self.color_pair = 12
+            self.aggro_radius = 7
         elif enemy_type == "sniper":
             self.char = 'S'
             self.speed = 6
@@ -221,12 +230,14 @@ class Enemy:
             self.color_pair = 13
             self.last_shot_time = 0
             self.shot_cooldown = SNIPER_COOLDOWN
+            self.aggro_radius = 10
         else:
             self.char = 'E'
             self.speed = 5
             self.health = 1
             self.score_value = 100
             self.color_pair = 4
+            self.aggro_radius = 6
 
     def pos(self):
         return (self.x, self.y)
@@ -377,42 +388,41 @@ class GameState:
         self.enemies = []
         enemy_distribution = self.calculate_enemy_distribution()
         
-        for _ in range(enemy_count):
-            if not filtered_positions:
-                # Si no hay posiciones filtradas, usar las válidas sin filtro de distancia
-                if valid_positions:
-                    x, y = valid_positions.pop()
-                    enemy_type = self.rng.choice(enemy_distribution)
-                    self.enemies.append(Enemy(x, y, enemy_type))
-                else:
-                    break
-            else:
-                x, y = filtered_positions.pop()
-                enemy_type = self.rng.choice(enemy_distribution)
-                self.enemies.append(Enemy(x, y, enemy_type))
+        # Usar primero las posiciones filtradas por distancia
+        spawn_positions = filtered_positions if filtered_positions else valid_positions
+        
+        for _ in range(min(enemy_count, len(spawn_positions))):
+            if not spawn_positions:
+                break
+            x, y = spawn_positions.pop()
+            enemy_type = self.rng.choice(enemy_distribution)
+            self.enemies.append(Enemy(x, y, enemy_type))
 
         self.ammos = []
         ammo_count = max(1, 2 + self.level // 2)
         ammo_positions = [p for p in valid_positions if p != start and p != exitpos]
         self.rng.shuffle(ammo_positions)
-        for _ in range(ammo_count):
+        for _ in range(min(ammo_count, len(ammo_positions))):
             if not ammo_positions:
                 break
             x, y = ammo_positions.pop()
             if self.map.in_bounds(x, y) and not self.map.is_wall(x, y):
                 self.ammos.append((int(x), int(y)))
         
-        # Power-ups
+        # Power-ups - CORREGIDO: usar valid_positions y verificar que no esté ocupada
         self.powerups = []
         powerup_chance = 0.2 + (self.level * 0.05)
         if self.rng.random() < powerup_chance and valid_positions:
-            powerup_types = ["health", "rapidfire", "shield", "invincibility"]
-            weights = [0.4, 0.2, 0.2, 0.2]
+            powerup_types = ["health", "rapidfire", "shield", "invincibility", "speed"]
+            weights = [0.3, 0.2, 0.2, 0.15, 0.15]
             chosen_type = self.rng.choices(powerup_types, weights=weights)[0]
             
-            powerup_positions = [p for p in valid_positions if p != start and p != exitpos]
+            # Crear lista de posiciones disponibles (excluyendo enemigos y otros objetos)
+            occupied_positions = set(start) | set(exitpos) | set(e.pos() for e in self.enemies) | set(self.ammos)
+            powerup_positions = [p for p in valid_positions if p not in occupied_positions]
+            
             if powerup_positions:
-                x, y = powerup_positions.pop()
+                x, y = self.rng.choice(powerup_positions)
                 self.powerups.append((x, y, chosen_type))
             
         self.bullets = []
@@ -480,7 +490,7 @@ def save_game(gs):
     tmp = SAVE_FILE + '.tmp'
     try:
         with open(tmp, 'w') as f:
-            json.dump(data, f, indent=2)  # indent para mejor legibilidad
+            json.dump(data, f, indent=2)
         os.replace(tmp, SAVE_FILE)
         return True
     except Exception as e:
@@ -499,7 +509,7 @@ def load_game():
             data = json.load(f)
         gs = GameState.deserialize(data)
         return gs
-    except Exception:
+    except Exception as e:
         return None
 
 def play_sound(sound_type):
@@ -526,16 +536,8 @@ def move_player(gs, dx, dy):
     if gs.map.is_wall(nx, ny):
         return
         
-    for e in list(gs.enemies):
-        if (nx, ny) == (e.x, e.y):
-            if gs.player.take_damage():
-                apply_damage_stun(gs)
-                play_sound('hit')
-            try:
-                gs.enemies.remove(e)
-            except ValueError:
-                pass
-            return
+    # CORREGIDO: Eliminada la colisión con enemigos aquí para evitar daño duplicado
+    # La colisión se maneja exclusivamente en move_enemies()
             
     gs.player.x, gs.player.y = nx, ny
     
@@ -562,6 +564,8 @@ def move_player(gs, dx, dy):
                     gs.player.shield_until = time.time() + SHIELD_DURATION
                 elif ptype == "invincibility":
                     gs.player.invincible_until = time.time() + INVINCIBILITY_DURATION
+                elif ptype == "speed":
+                    gs.player.speed_until = time.time() + SPEED_DURATION
                 play_sound('powerup')
             except ValueError:
                 pass
@@ -620,11 +624,11 @@ def step_bullets(gs):
                     if not b.pierce:
                         break
         else:
-            if (b.x, b.y) == (gs.player.x, gs.player.y) and id(gs.player) not in b.hit_enemies:
+            # CORREGIDO: Detección mejorada de colisión con jugador
+            if (b.x, b.y) == (gs.player.x, gs.player.y):
                 if gs.player.take_damage():
                     apply_damage_stun(gs)
                     play_sound('hit')
-                b.hit_enemies.add(id(gs.player))
                 hit_something = True
             
         if not hit_something or b.pierce:
@@ -632,12 +636,13 @@ def step_bullets(gs):
             
     gs.bullets = new_bullets
 
-def enemy_detects_player(e, gs, radius=6):
+def enemy_detects_player(e, gs):
     if not gs.player:
         return False
     dx = gs.player.x - e.x
     dy = gs.player.y - e.y
-    return (dx * dx + dy * dy) <= radius * radius
+    distance = (dx * dx + dy * dy) ** 0.5
+    return distance <= e.aggro_radius
 
 def can_enemy_move_to(gs, nx, ny, occupied):
     if not gs.map.in_bounds(nx, ny):
@@ -666,6 +671,7 @@ def move_enemies(gs):
         
     occupied = set((e.x, e.y) for e in gs.enemies)
     
+    # Primero mover enemigos que están en la misma posición
     for e in list(gs.enemies):
         count_at_pos = sum(1 for other in gs.enemies if (other.x, other.y) == (e.x, e.y))
         if count_at_pos > 1:
@@ -674,36 +680,44 @@ def move_enemies(gs):
     for e in list(gs.enemies):
         detected = enemy_detects_player(e, gs)
         
+        # LÓGICA DE DISPARO DEL SNIPER CORREGIDA
         if e.type == "sniper" and detected and e.can_shoot():
             dx = gs.player.x - e.x
             dy = gs.player.y - e.y
             
+            # Determinar dirección principal de disparo (horizontal o vertical)
             if abs(dx) > abs(dy):
-                dx = 1 if dx > 0 else -1
-                dy = 0
+                shot_dx = 1 if dx > 0 else -1
+                shot_dy = 0
             else:
-                dy = 1 if dy > 0 else -1
-                dx = 0
+                shot_dy = 1 if dy > 0 else -1
+                shot_dx = 0
                 
-            # Verificar línea de visión con límite de distancia
+            # Verificar línea de visión CORREGIDA
             has_line_of_sight = True
-            cx, cy = e.x + dx, e.y + dy
-            max_distance = 10  # Límite de visión para francotiradores
-            distance = 0
+            check_x, check_y = e.x, e.y
             
-            while (cx, cy) != (gs.player.x, gs.player.y) and distance < max_distance:
-                if gs.map.is_wall(cx, cy):
+            # Verificar cada celda hasta el jugador
+            while (check_x, check_y) != (gs.player.x, gs.player.y):
+                check_x += shot_dx
+                check_y += shot_dy
+                
+                # Si nos pasamos del jugador, salir
+                if (abs(check_x - e.x) > abs(dx) or 
+                    abs(check_y - e.y) > abs(dy)):
+                    break
+                    
+                # Si encontramos una pared, no hay línea de visión
+                if not gs.map.in_bounds(check_x, check_y) or gs.map.is_wall(check_x, check_y):
                     has_line_of_sight = False
                     break
-                cx += dx
-                cy += dy
-                distance += 1
-                
-            if has_line_of_sight and distance < max_distance:
-                enemy_fire_bullet(e, gs, dx, dy)
-                continue
+                    
+            # Solo disparar si tenemos línea de visión clara hasta el jugador
+            if has_line_of_sight and (check_x, check_y) == (gs.player.x, gs.player.y):
+                enemy_fire_bullet(e, gs, shot_dx, shot_dy)
+                continue  # Saltar movimiento si dispara
         
-        # Movimiento basado en velocidad del enemigo
+        # MOVIMIENTO MEJORADO CON COMPORTAMIENTO AGRESIVO
         current_tick = int(time.time() * 10)
         if current_tick % e.speed != 0:
             continue
@@ -711,14 +725,18 @@ def move_enemies(gs):
         if detected:
             dx = gs.player.x - e.x
             dy = gs.player.y - e.y
-            sx = 0 if dx == 0 else (1 if dx > 0 else -1)
-            sy = 0 if dy == 0 else (1 if dy > 0 else -1)
+            distance = (dx * dx + dy * dy) ** 0.5
             
-            choices = []
-            if abs(dx) > abs(dy):
-                choices = [(sx, 0), (0, sy)]
+            # Comportamiento más agresivo cuando está cerca
+            if distance <= 2:  # Muy cerca - atacar directamente
+                choices = [(1 if dx > 0 else -1 if dx < 0 else 0, 
+                          1 if dy > 0 else -1 if dy < 0 else 0)]
             else:
-                choices = [(0, sy), (sx, 0)]
+                # Persecución inteligente
+                if abs(dx) > abs(dy):
+                    choices = [(1 if dx > 0 else -1, 0), (0, 1 if dy > 0 else -1)]
+                else:
+                    choices = [(0, 1 if dy > 0 else -1), (1 if dx > 0 else -1, 0)]
                 
             moved = False
             for dxm, dym in choices:
@@ -731,10 +749,21 @@ def move_enemies(gs):
                     break
                     
             if not moved:
-                try_random_enemy_move(e, gs, occupied)
+                # Intentar movimientos alternativos
+                all_dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                gs.rng.shuffle(all_dirs)
+                for dxm, dym in all_dirs:
+                    nx, ny = e.x + dxm, e.y + dym
+                    if can_enemy_move_to(gs, nx, ny, occupied):
+                        occupied.discard((e.x, e.y))
+                        e.x, e.y = nx, ny
+                        occupied.add((e.x, e.y))
+                        moved = True
+                        break
         else:
             try_random_enemy_move(e, gs, occupied)
             
+        # CORREGIDO: Colisión con jugador manejada aquí exclusivamente
         if (e.x, e.y) == (gs.player.x, gs.player.y):
             if gs.player.take_damage():
                 apply_damage_stun(gs)
@@ -786,6 +815,8 @@ def draw_game(stdscr, gs, offset_y=2, offset_x=0):
                     stdscr.addch(offset_y + py, offset_x + px, SHIELD_CHAR, curses.color_pair(10))
                 elif ptype == "invincibility":
                     stdscr.addch(offset_y + py, offset_x + px, INVINCIBILITY_CHAR, curses.color_pair(15))
+                elif ptype == "speed":
+                    stdscr.addch(offset_y + py, offset_x + px, SPEED_CHAR, curses.color_pair(16))
             except curses.error:
                 pass
                 
@@ -827,17 +858,26 @@ def draw_game(stdscr, gs, offset_y=2, offset_x=0):
                 color = curses.color_pair(10)
             elif gs.player.has_invincibility():
                 color = curses.color_pair(15)
+            elif gs.player.has_speed():
+                color = curses.color_pair(16)
             stdscr.addch(offset_y + gs.player.y, offset_x + gs.player.x, PLAYER_CHAR, color | curses.A_BOLD)
         except curses.error:
             pass
             
-    # HUD mejorado
+    # HUD MEJORADO - CORREGIDO para pantallas pequeñas
     play_time = int(time.time() - gs.start_time)
     minutes = play_time // 60
     seconds = play_time % 60
     
-    hud_line1 = f"HP: {gs.player.hp}/{gs.player.max_hp}   AMMO: {gs.player.ammo}   WEAPON: {gs.player.current_weapon}"
-    hud_line2 = f"LEVEL: {gs.level}/{MAX_LEVEL}   SCORE: {gs.player.score}   TIME: {minutes:02d}:{seconds:02d}"
+    # Líneas de HUD adaptativas
+    hud_line1 = f"HP:{gs.player.hp}/{gs.player.max_hp} AMMO:{gs.player.ammo} SEED:{gs.seed}"
+    hud_line2 = f"LVL:{gs.level}/{MAX_LEVEL} SCORE:{gs.player.score} TIME:{minutes:02d}:{seconds:02d}"
+    
+    # Truncar líneas si son demasiado largas
+    if len(hud_line1) > max_x:
+        hud_line1 = hud_line1[:max_x]
+    if len(hud_line2) > max_x:
+        hud_line2 = hud_line2[:max_x]
     
     try:
         stdscr.addstr(0, 0, "ESCAPE THE TERMINAL", curses.color_pair(1) | curses.A_BOLD)
@@ -846,19 +886,22 @@ def draw_game(stdscr, gs, offset_y=2, offset_x=0):
         
         effects = []
         if gs.player.has_rapidfire():
-            effects.append("RAPID FIRE")
+            effects.append("RAPID")
         if gs.player.has_shield():
             effects.append("SHIELD")
         if gs.player.has_invincibility():
-            effects.append("INVINCIBLE!")
+            effects.append("INVINCIBLE")
+        if gs.player.has_speed():
+            effects.append("SPEED")
         if effects:
             effect_str = "ACTIVE: " + ", ".join(effects)
             # Truncar si es muy largo
             if len(effect_str) > max_x:
                 effect_str = effect_str[:max_x-4] + "..."
-            stdscr.addstr(3, 0, effect_str, curses.color_pair(1))
+            if 3 < max_y:
+                stdscr.addstr(3, 0, effect_str, curses.color_pair(1))
             
-        if gs.lore_message:
+        if gs.lore_message and (offset_y + view_h + 1) < max_y:
             # Truncar mensaje de lore si es necesario
             lore_msg = f"> {gs.lore_message}"
             if len(lore_msg) > max_x:
@@ -937,33 +980,24 @@ def menu(stdscr):
             if 1 < max_y:
                 stdscr.addstr(1, 0, credit, curses.color_pair(1))
             
-            # Información del juego - truncada si es necesario
-            info_lines = [
-                "NUEVO: 4 tipos de power-ups! Salud(+), Rapido(R), Escudo(S), Invencible(I)",
-                "CONTROLES: Flechas(mover), WASD(disparar), P(pausa)",
-                "ENEMIGOS: Basico(E,rojo), Tanque(T,magenta), Francotirador(S,cyan)"
-            ]
+            # ELIMINADO: Todas las líneas de información
             
-            for i, line in enumerate(info_lines):
-                if 3 + i < max_y:
-                    truncated_line = line[:max_x] if len(line) > max_x else line
-                    stdscr.addstr(3 + i, 0, truncated_line, curses.color_pair(1))
         except curses.error:
             pass
         
-        # Opciones del menú
+        # Opciones del menú - movidas más arriba
         for i, opt in enumerate(options):
-            if 7 + i < max_y:
+            if 3 + i < max_y:
                 prefix = "> " if i == selected else "  "
                 try:
-                    stdscr.addstr(7 + i, 2, prefix + opt, curses.color_pair(1))
+                    stdscr.addstr(3 + i, 2, prefix + opt, curses.color_pair(1))
                 except curses.error:
                     pass
         
         # Versión
         try:
-            if 11 < max_y:
-                stdscr.addstr(11, 2, "v0.3-alpha", curses.color_pair(1))
+            if 7 < max_y:
+                stdscr.addstr(7, 2, "v0.4-alpha", curses.color_pair(1))
         except curses.error:
             pass
             
@@ -977,8 +1011,11 @@ def menu(stdscr):
             selected = (selected + 1) % len(options)
         elif key in (ord('\n'), ord('\r'), 10, 13):
             return options[selected]
-        elif key == 27:
-            continue
+        elif key == 27:  # ESC
+            if options[selected] == 'Salir':
+                return 'Salir'
+            else:
+                continue
 
 def prompt_seed(stdscr):
     curses.curs_set(1)
@@ -991,24 +1028,50 @@ def prompt_seed(stdscr):
         stdscr.addstr(2, 2, "███████ NEW GAME ███████", curses.color_pair(1) | curses.A_BOLD)
         stdscr.addstr(4, 2, "Enter seed (leave blank for random): ", curses.color_pair(1))
         stdscr.addstr(6, 2, "Secret seeds: GOD, H4CK3R", curses.color_pair(1))
+        stdscr.addstr(8, 2, "Press ESC to return to main menu", curses.color_pair(1))
     except curses.error:
         pass
         
     stdscr.refresh()
     
+    # Posicionar el cursor correctamente
+    input_x = 40
+    stdscr.move(4, input_x)
+    
     try:
-        # Limitar la longitud de entrada al ancho de la pantalla
-        max_input_len = min(20, max_x - 40)
+        max_input_len = min(20, max_x - input_x)
+        input_str = ""
+        
         if max_input_len > 0:
-            input_str = stdscr.getstr(4, 40, max_input_len).decode('utf-8').strip()
-        else:
-            input_str = ""
+            while True:
+                # Asegurar que el cursor está en la posición correcta
+                stdscr.move(4, input_x + len(input_str))
+                ch = stdscr.getch()
+                
+                if ch == 27:  # ESC - cancelar y volver al menú
+                    curses.curs_set(0)
+                    curses.noecho()
+                    return None
+                elif ch in (10, 13):  # ENTER - confirmar seed
+                    break
+                elif ch == curses.KEY_BACKSPACE or ch == 127 or ch == 8:  # CORREGIDO: Manejar todos los tipos de backspace
+                    if len(input_str) > 0:
+                        # CORRECCIÓN: Borrar el último carácter visualmente
+                        input_str = input_str[:-1]
+                        # Limpiar tanto la posición del carácter borrado como actualizar el cursor
+                        stdscr.addch(4, input_x + len(input_str), ' ')  # Limpiar la posición
+                        stdscr.move(4, input_x + len(input_str))  # Reposicionar cursor
+                elif len(input_str) < max_input_len and 32 <= ch <= 126:
+                    input_str += chr(ch)
+                    # Mostrar el carácter en la posición correcta
+                    stdscr.addch(4, input_x + len(input_str) - 1, chr(ch))
     except Exception:
         input_str = ""
         
     curses.curs_set(0)
     curses.noecho()
-    return input_str if input_str != "" else None
+    
+    return input_str
 
 def prompt_confirm_load(stdscr):
     curses.curs_set(0)
@@ -1042,7 +1105,7 @@ def pause_menu(stdscr, gs):
                     stdscr.addstr(4 + i, 4, prefix + o, curses.color_pair(1))
             
             if 10 < max_y:
-                stdscr.addstr(10, 4, "Flechas para navegar, Enter para seleccionar", curses.color_pair(1))
+                stdscr.addstr(10, 4, "Flechas para navegar, Enter para seleccionar, ESC para continuar", curses.color_pair(1))
         except curses.error:
             pass
         
@@ -1080,7 +1143,7 @@ def pause_menu(stdscr, gs):
                     continue
             if choice == 'Salir al menu':
                 return 'menu'
-        elif ch == 27:
+        elif ch == 27:  # ESC para continuar
             return 'continue'
 
 def apply_damage_stun(gs):
@@ -1112,7 +1175,7 @@ def run_game(stdscr, gs):
 
         if key != -1:
             if current_time < gs.stunned_until:
-                if key == ord('p'):
+                if key == ord('p') or key == 27:  # P o ESC para pausa
                     res = pause_menu(stdscr, gs)
                     if res == 'menu':
                         stdscr.nodelay(False)
@@ -1141,7 +1204,7 @@ def run_game(stdscr, gs):
                     shoot_delta = (sx, sy)
                     gs._last_key = None
 
-                elif key == ord('p'):
+                elif key == ord('p') or key == 27:  # P o ESC para pausa
                     res = pause_menu(stdscr, gs)
                     if res == 'menu':
                         stdscr.nodelay(False)
@@ -1154,8 +1217,16 @@ def run_game(stdscr, gs):
             if gs._last_key is not None and current_time > gs._next_repeat_time + 1.0:
                 gs._last_key = None
 
+        # CORREGIDO: Movimiento con velocidad mejorado
         if move_delta:
-            move_player(gs, move_delta[0], move_delta[1])
+            steps = 2 if gs.player.has_speed() else 1
+            for step in range(steps):
+                # Solo mover si el jugador sigue vivo
+                if gs.player and gs.player.hp > 0:
+                    move_player(gs, move_delta[0], move_delta[1])
+                else:
+                    break
+                    
         if shoot_delta:
             fire_bullet(gs, shoot_delta[0], shoot_delta[1])
 
@@ -1183,13 +1254,13 @@ def main(stdscr):
     try:
         curses.start_color()
         curses.use_default_colors()
-        # Sistema de colores único para cada elemento
-        curses.init_pair(1, curses.COLOR_GREEN, -1)      # HUD y paredes
-        curses.init_pair(2, curses.COLOR_GREEN, -1)      # Suelo (mismo que paredes)
-        curses.init_pair(3, curses.COLOR_GREEN, -1)      # Jugador (verde)
+        # SISTEMA DE COLORES ÚNICO v0.4-alpha - CLARIDAD VISUAL
+        curses.init_pair(1, curses.COLOR_GREEN, -1)      # HUD y paredes (verde)
+        curses.init_pair(2, curses.COLOR_WHITE, -1)      # Suelo (blanco)
+        curses.init_pair(3, curses.COLOR_CYAN, -1)       # Jugador (cyan)
         curses.init_pair(4, curses.COLOR_RED, -1)        # Enemigos básicos (rojo)
         curses.init_pair(5, curses.COLOR_YELLOW, -1)     # Balas del jugador (amarillo)
-        curses.init_pair(6, curses.COLOR_CYAN, -1)       # Munición (cyan)
+        curses.init_pair(6, curses.COLOR_BLUE, -1)       # Munición (azul)
         curses.init_pair(7, curses.COLOR_MAGENTA, -1)    # Salida (magenta)
         curses.init_pair(8, curses.COLOR_GREEN, -1)      # Power-up salud (verde)
         curses.init_pair(9, curses.COLOR_YELLOW, -1)     # Power-up rapidfire (amarillo)
@@ -1199,6 +1270,7 @@ def main(stdscr):
         curses.init_pair(13, curses.COLOR_CYAN, -1)      # Enemigos francotiradores (cyan)
         curses.init_pair(14, curses.COLOR_RED, -1)       # Balas enemigas (rojo)
         curses.init_pair(15, curses.COLOR_WHITE, -1)     # Power-up invencibilidad (blanco brillante)
+        curses.init_pair(16, curses.COLOR_MAGENTA, -1)   # Power-up velocidad (magenta)
     except curses.error:
         pass
 
@@ -1227,7 +1299,11 @@ def main(stdscr):
                     gs.new_level()
                 run_game(stdscr, gs)
         elif choice == 'Nueva partida':
-            seed = prompt_seed(stdscr)
+            seed_input = prompt_seed(stdscr)
+            if seed_input is None:  # Usuario presionó ESC
+                continue
+            # Si seed_input es string vacía, convertimos a None para que GameState genere una seed aleatoria
+            seed = seed_input if seed_input != "" else None
             gs = GameState(level=1, seed=seed)
             gs.new_level()
             run_game(stdscr, gs)
