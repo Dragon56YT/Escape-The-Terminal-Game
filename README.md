@@ -2,7 +2,7 @@
 
 ![Python](https://img.shields.io/badge/Python-3.6%2B%20(min)%20|%203.13%2B%20(recommended)-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-v0.5--beta-orange)
+![Version](https://img.shields.io/badge/version-v0.6--beta-orange)
 
 **Escape the Terminal** es un roguelike de un solo archivo para la terminal, escrito en Python.  
 Enfréntate a múltiples tipos de enemigos, recoge power-ups y munición, y alcanza la salida mientras avanzas por niveles generados proceduralmente.
