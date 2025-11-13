@@ -1,8 +1,7 @@
 """
 Escape the Terminal - single-file Python roguelike for the terminal
-
 By: Dragon56YT
-Version: v0.5-beta
+Version: v0.6-beta
 """
 
 import curses
@@ -29,6 +28,7 @@ LORE_LINES = [
     "A SHADOW MOVES WHERE THERE IS NO LIGHT."
 ]
 
+# CONSTANTS - OPTIMIZED
 WALL = '#'
 FLOOR = '.'
 PLAYER_CHAR = '@'
@@ -40,7 +40,7 @@ SHIELD_CHAR = 'S'
 INVINCIBILITY_CHAR = 'I'
 SPEED_CHAR = 'V'
 
-# MOVIMIENTO: SOLO flechas
+# MOVEMENT: ONLY arrow keys
 MOVE_KEYS = {
     curses.KEY_UP: -1j,
     curses.KEY_DOWN: 1j,
@@ -48,7 +48,7 @@ MOVE_KEYS = {
     curses.KEY_RIGHT: 1
 }
 
-# DISPARO: SOLO WASD
+# SHOOTING: ONLY WASD
 SHOOT_KEYS = {
     ord('w'): -1j, ord('W'): -1j,
     ord('s'): 1j, ord('S'): 1j,
@@ -56,18 +56,28 @@ SHOOT_KEYS = {
     ord('d'): 1, ord('D'): 1
 }
 
-INITIAL_REPEAT_DELAY = 0.30
-REPEAT_INTERVAL = 0.25
-DAMAGE_STUN_DURATION = 1.0
+# TIMING - OPTIMIZED
+INITIAL_REPEAT_DELAY = 0.4
+REPEAT_INTERVAL = 0.2
+DAMAGE_STUN_DURATION = 0.8
 MIN_ENEMY_SPAWN_DISTANCE = 8
 MAX_LEVEL = 10
-ULTRAFIRE_DURATION = 6.0
-SHIELD_DURATION = -1  # Infinito (solo nivel actual)
-INVINCIBILITY_DURATION = 5.0
-SPEED_DURATION = 8.0
-SNIPER_COOLDOWN = 3.0
-MAX_BULLETS = 50
-MAX_ACTIVE_BULLETS = 30  # Nuevo: límite para prevenir memory leaks
+ULTRAFIRE_DURATION = 7.0
+SHIELD_DURATION = -1
+INVINCIBILITY_DURATION = 6.0
+SPEED_DURATION = 10.0
+SNIPER_COOLDOWN = 3.5
+MAX_BULLETS = 20  # REDUCED for performance
+MAX_ACTIVE_BULLETS = 15  # REDUCED for performance
+
+# HUD LAYOUT
+HUD_LINES = 5
+MIN_GAME_HEIGHT = 20
+MIN_GAME_WIDTH = 40
+
+# OPTIMIZATION CONSTANTS
+MAX_ENEMIES = 12  # Limit enemies for performance
+CACHE_DURATION = 0.1  # Cache calculations for this duration
 
 def to_xy(pos):
     return int(pos.real), int(pos.imag)
@@ -77,6 +87,8 @@ class GameMap:
         self.width = width
         self.height = height
         self.walls = set(walls) if walls else set()
+        self._grid_cache = None
+        self._cache_time = 0
 
     def in_bounds(self, x, y):
         return 0 <= x < self.width and 0 <= y < self.height
@@ -91,11 +103,15 @@ class GameMap:
                 yield nx, ny
 
     def to_grid(self):
-        grid = [[FLOOR for _ in range(self.width)] for __ in range(self.height)]
-        for (wx, wy) in self.walls:
-            if 0 <= wy < self.height and 0 <= wx < self.width:
-                grid[wy][wx] = WALL
-        return grid
+        # OPTIMIZATION: Cache grid generation
+        current_time = time.time()
+        if self._grid_cache is None or current_time - self._cache_time > CACHE_DURATION:
+            self._grid_cache = [[FLOOR for _ in range(self.width)] for __ in range(self.height)]
+            for (wx, wy) in self.walls:
+                if 0 <= wy < self.height and 0 <= wx < self.width:
+                    self._grid_cache[wy][wx] = WALL
+            self._cache_time = current_time
+        return self._grid_cache
 
     def random_floor_positions(self):
         for y in range(self.height):
@@ -113,7 +129,7 @@ class GameMap:
         walls = [tuple(wi) for wi in data.get('walls', [])]
         return GameMap(w, h, walls=walls)
 
-def ensure_path(width, height, wall_chance, rng, max_tries=300):
+def ensure_path(width, height, wall_chance, rng, max_tries=100):  # REDUCED tries for performance
     for _ in range(max_tries):
         walls = set()
         for y in range(height):
@@ -165,8 +181,12 @@ class Player:
         self.score = 0
         self.enemies_killed = {'normal': 0, 'tank': 0, 'sniper': 0}
         self.active_powerup = None
-        self._last_damage_time = 0  # Nuevo: prevenir daño múltiple
-        self._damage_cooldown = 0.5  # Nuevo: cooldown entre daños
+        self._last_damage_time = 0
+        self._damage_cooldown = 0.5
+        self._last_move_time = 0
+        self._move_cooldown = 0.15
+        self._last_shot_time = 0
+        self._shot_cooldown = 0.2
 
     def pos(self):
         return (self.x, self.y)
@@ -184,11 +204,15 @@ class Player:
         return time.time() < self.speed_until
 
     def can_take_damage(self):
-        """Nuevo: prevenir daño múltiple en frames consecutivos"""
         return time.time() - self._last_damage_time > self._damage_cooldown
 
+    def can_move(self):
+        return time.time() - self._last_move_time > self._move_cooldown
+
+    def can_shoot(self):
+        return time.time() - self._last_shot_time > self._shot_cooldown
+
     def take_damage(self, amount=1):
-        """CORREGIDO: Lógica de daño mejorada"""
         if not self.can_take_damage():
             return False
             
@@ -203,7 +227,6 @@ class Player:
         return False
 
     def reset_powerups(self):
-        """CORREGIDO: Reset completo de power-ups"""
         self.ultrafire_until = 0.0
         self.has_shield = False
         self.invincible_until = 0.0
@@ -211,7 +234,6 @@ class Player:
         self.active_powerup = None
 
     def update_active_powerup(self):
-        """CORREGIDO: Mejor detección de power-up activo"""
         current_time = time.time()
         self.active_powerup = None
         
@@ -241,7 +263,9 @@ class Player:
             'max_hp': self.max_hp,
             'enemies_killed': self.enemies_killed,
             'active_powerup': self.active_powerup,
-            '_last_damage_time': self._last_damage_time
+            '_last_damage_time': self._last_damage_time,
+            '_last_move_time': self._last_move_time,
+            '_last_shot_time': self._last_shot_time
         }
 
     @staticmethod
@@ -257,6 +281,8 @@ class Player:
         p.enemies_killed = d.get('enemies_killed', {'normal': 0, 'tank': 0, 'sniper': 0})
         p.active_powerup = d.get('active_powerup', None)
         p._last_damage_time = d.get('_last_damage_time', 0.0)
+        p._last_move_time = d.get('_last_move_time', 0.0)
+        p._last_shot_time = d.get('_last_shot_time', 0.0)
         return p
 
 class Enemy:
@@ -267,14 +293,14 @@ class Enemy:
         
         if enemy_type == "tank":
             self.char = 'T'
-            self.speed = 8
+            self.speed = 4
             self.health = 2
             self.score_value = 300
             self.color_pair = 12
             self.aggro_radius = 7
         elif enemy_type == "sniper":
             self.char = 'S'
-            self.speed = 6
+            self.speed = 3
             self.health = 1
             self.score_value = 250
             self.color_pair = 13
@@ -283,7 +309,7 @@ class Enemy:
             self.aggro_radius = 10
         else:
             self.char = 'E'
-            self.speed = 5
+            self.speed = 2
             self.health = 1
             self.score_value = 100
             self.color_pair = 4
@@ -329,8 +355,8 @@ class Bullet:
         self.char = '*' if not is_enemy_bullet else '!'
         self.is_enemy_bullet = is_enemy_bullet
         self.hit_enemies = set()
-        self.created_time = time.time()  # Nuevo: para limpieza automática
-        self.max_lifetime = 10.0  # Nuevo: máximo tiempo de vida
+        self.created_time = time.time()
+        self.max_lifetime = 4.0  # REDUCED for performance
 
     def pos(self):
         return (self.x, self.y)
@@ -340,7 +366,6 @@ class Bullet:
         self.y += self.dy
 
     def is_expired(self):
-        """Nuevo: verificar si la bala ha existido demasiado tiempo"""
         return time.time() - self.created_time > self.max_lifetime
 
     def serialize(self):
@@ -392,22 +417,28 @@ class GameState:
         self._next_repeat_time = 0.0
         self.stunned_until = 0.0
         self.start_time = time.time()
+        self.enemies_killed_this_level = 0
+        self._last_enemy_move_time = 0
+        self._enemy_move_interval = 0.4  # INCREASED for performance
+        self._last_optimization_time = 0  # OPTIMIZATION: Periodic cleanup
 
     def calculate_enemy_distribution(self):
         if self.level == 1:
             return ["normal"] * 100
         elif self.level <= 3:
-            return ["normal"] * 80 + ["tank"] * 20
+            return ["normal"] * 75 + ["tank"] * 25
         elif self.level <= 5:
-            return ["normal"] * 70 + ["tank"] * 20 + ["sniper"] * 10
-        else:
+            return ["normal"] * 65 + ["tank"] * 25 + ["sniper"] * 10
+        elif self.level <= 7:
             return ["normal"] * 60 + ["tank"] * 25 + ["sniper"] * 15
+        else:
+            return ["normal"] * 55 + ["tank"] * 30 + ["sniper"] * 15
 
     def new_level(self):
         base_w, base_h = 30, 16
         w = min(80, base_w + (self.level - 1) * 2)
         h = min(40, base_h + (self.level - 1) * 1)
-        wall_chance = min(0.22 + (self.level - 1) * 0.008, 0.34)
+        wall_chance = min(0.20 + (self.level - 1) * 0.01, 0.35)
         
         self.map, start, exitpos = ensure_path(w, h, wall_chance, self.rng)
         self.exit = exitpos
@@ -416,17 +447,17 @@ class GameState:
             self.player = Player(start[0], start[1])
         else:
             self.player.x, self.player.y = start[0], start[1]
-            # CORREGIDO: Reset consistente de power-ups
             self.player.reset_powerups()
-            if self.level % 3 == 0:
-                self.player.max_hp = min(5, self.player.max_hp + 1)
+            if self.level % 2 == 0 and self.player.max_hp < 5:
+                self.player.max_hp += 1
                 self.player.hp = self.player.max_hp
 
         self.apply_seed_effects_on_start()
         
-        enemy_count = 3 + max(0, (self.level - 1))
+        # OPTIMIZATION: Limit enemy count
+        enemy_count = min(MAX_ENEMIES, 3 + max(0, (self.level - 1) * 2))
         if 'SAFE' in self.special_effects:
-            enemy_count = max(1, enemy_count - 2)
+            enemy_count = max(1, enemy_count - 3)
             
         floor_positions = list(self.map.random_floor_positions())
         self.rng.shuffle(floor_positions)
@@ -460,7 +491,7 @@ class GameState:
             self.enemies.append(Enemy(x, y, enemy_type))
 
         self.ammos = []
-        ammo_count = max(1, 2 + self.level // 2)
+        ammo_count = max(1, 2 + self.level // 3)
         ammo_positions = [p for p in valid_positions if p != start and p != exitpos]
         self.rng.shuffle(ammo_positions)
         for _ in range(min(ammo_count, len(ammo_positions))):
@@ -470,35 +501,62 @@ class GameState:
             if self.map.in_bounds(x, y) and not self.map.is_wall(x, y):
                 self.ammos.append((int(x), int(y)))
         
-        # Power-ups - CORREGIDO: Mejor distribución
         self.powerups = []
         powerup_types = ["health", "ultrafire", "shield", "invincibility", "speed"]
-        weights = [0.30, 0.15, 0.20, 0.15, 0.15]
+        weights = [0.35, 0.15, 0.20, 0.15, 0.15]
         
-        # Crear lista de posiciones disponibles
         occupied_positions = set(start) | set(exitpos) | set(e.pos() for e in self.enemies) | set(self.ammos)
         powerup_positions = [p for p in valid_positions if p not in occupied_positions]
         self.rng.shuffle(powerup_positions)
         
-        # Generar power-ups basado en probabilidades
+        min_powerups = 1 if self.level % 2 == 0 else 0
+        powerups_placed = 0
+        
         for ptype, weight in zip(powerup_types, weights):
-            if self.rng.random() < weight and powerup_positions:
+            if (self.rng.random() < weight or powerups_placed < min_powerups) and powerup_positions:
                 x, y = powerup_positions.pop()
                 self.powerups.append((x, y, ptype))
+                powerups_placed += 1
             
         self.bullets = []
         self.lore_message = self.rng.choice(LORE_LINES)
+        self.enemies_killed_this_level = 0
+        self._last_enemy_move_time = time.time()
+        self._last_optimization_time = time.time()
 
     def apply_seed_effects_on_start(self):
         s = (self.seed or '').upper()
+        if s == 'SAFE':
+            self.special_effects.add('SAFE')
         if s == 'H4CK3R':
             if self.player:
-                self.player.ammo += 8
+                self.player.ammo += 10
             self.special_effects.add('H4CK3R')
         if s == 'GOD':
             if self.player:
                 self.player.hp = 999
+                self.player.max_hp = 999
             self.special_effects.add('GOD')
+
+    def optimize_game_state(self):
+        """OPTIMIZATION: Periodic cleanup of game state"""
+        current_time = time.time()
+        if current_time - self._last_optimization_time < 2.0:  # Cleanup every 2 seconds
+            return
+            
+        self._last_optimization_time = current_time
+        
+        # Clean up expired bullets more aggressively
+        self.bullets = [b for b in self.bullets if not b.is_expired()]
+        
+        # Limit bullets to prevent memory issues
+        if len(self.bullets) > MAX_ACTIVE_BULLETS:
+            self.bullets.sort(key=lambda b: b.created_time)
+            self.bullets = self.bullets[-MAX_ACTIVE_BULLETS:]
+            
+        # Clear map cache to free memory
+        if self.map and hasattr(self.map, '_grid_cache'):
+            self.map._grid_cache = None
 
     def serialize(self):
         data = {
@@ -514,7 +572,9 @@ class GameState:
             'lore_message': self.lore_message,
             'special_effects': list(self.special_effects),
             'start_time': self.start_time,
-            'stunned_until': self.stunned_until
+            'stunned_until': self.stunned_until,
+            'enemies_killed_this_level': self.enemies_killed_this_level,
+            '_last_enemy_move_time': self._last_enemy_move_time
         }
         try:
             rng_state = self.rng.getstate()
@@ -541,6 +601,8 @@ class GameState:
         gs.special_effects = set(d.get('special_effects', []))
         gs.start_time = d.get('start_time', time.time())
         gs.stunned_until = d.get('stunned_until', 0.0)
+        gs.enemies_killed_this_level = d.get('enemies_killed_this_level', 0)
+        gs._last_enemy_move_time = d.get('_last_enemy_move_time', time.time())
         try:
             if d.get('rng_state'):
                 gs.rng.setstate(_list_to_state(d['rng_state']))
@@ -587,12 +649,21 @@ def play_sound(sound_type):
             for _ in range(3):
                 print('\a', end='', flush=True)
                 time.sleep(0.05)
+        elif sound_type == 'level_up':
+            for _ in range(2):
+                for i in range(3):
+                    print('\a', end='', flush=True)
+                    time.sleep(0.1)
+                time.sleep(0.2)
     except Exception:
         pass
 
 def move_player(gs, dx, dy):
     if not gs.player or not gs.map:
         return
+    if not gs.player.can_move():
+        return
+        
     nx, ny = gs.player.x + int(dx), gs.player.y + int(dy)
     if not gs.map.in_bounds(nx, ny):
         return
@@ -600,20 +671,22 @@ def move_player(gs, dx, dy):
         return
         
     gs.player.x, gs.player.y = nx, ny
+    gs.player._last_move_time = time.time()
     
-    # Recolectar items
-    if (nx, ny) in gs.ammos:
+    # OPTIMIZATION: Use sets for faster lookups
+    player_pos = (nx, ny)
+    
+    if player_pos in gs.ammos:
         try:
-            gs.ammos.remove((nx, ny))
+            gs.ammos.remove(player_pos)
             gs.player.ammo += 3
             play_sound('powerup')
         except ValueError:
             pass
     
-    # Recolectar power-ups
     for powerup in list(gs.powerups):
         px, py, ptype = powerup
-        if (nx, ny) == (px, py):
+        if player_pos == (px, py):
             try:
                 gs.powerups.remove(powerup)
                 if ptype == "health":
@@ -637,25 +710,24 @@ def fire_bullet(gs, dx, dy):
         return
     if dx == 0 and dy == 0:
         return
+    if not gs.player.can_shoot():
+        return
         
-    # CORREGIDO: Límite más estricto de balas activas
+    # OPTIMIZATION: More aggressive bullet limiting
     if len(gs.bullets) >= MAX_ACTIVE_BULLETS:
-        # Remover balas más viejas si hay demasiadas
         gs.bullets.sort(key=lambda b: b.created_time)
-        gs.bullets = gs.bullets[-MAX_ACTIVE_BULLETS//2:]
+        gs.bullets = gs.bullets[-MAX_ACTIVE_BULLETS//2:]  # Remove half of oldest bullets
         
-    # Solo consumir ammo si no tiene ultrafire
     if not gs.player.has_ultrafire():
         gs.player.ammo -= 1
         
-    # Crear bala con capacidad de atravesar paredes si tiene UltraFire
     pierce_walls = gs.player.has_ultrafire()
     b = Bullet(gs.player.x, gs.player.y, int(dx), int(dy), pierce_walls=pierce_walls)
     gs.bullets.append(b)
+    gs.player._last_shot_time = time.time()
     play_sound('shoot')
 
 def enemy_fire_bullet(e, gs, dx, dy):
-    # CORREGIDO: Límite para balas enemigas también
     if len(gs.bullets) >= MAX_ACTIVE_BULLETS:
         return
         
@@ -666,29 +738,31 @@ def enemy_fire_bullet(e, gs, dx, dy):
 
 def step_bullets(gs):
     new_bullets = []
+    bullet_positions = set()  # OPTIMIZATION: Track bullet positions for collision
     
     for b in gs.bullets:
-        # CORREGIDO: Limpieza de balas viejas
         if b.is_expired():
             continue
             
         b.step()
+        bullet_pos = (b.x, b.y)
         
-        # CORREGIDO: Mejor manejo de balas UltraFire
         if not gs.map.in_bounds(b.x, b.y):
             continue
             
-        if not b.pierce_walls and gs.map.is_wall(b.x, b.y):
+        if gs.map.is_wall(b.x, b.y) and not b.pierce_walls:
             continue
             
         hit_something = False
         
         if not b.is_enemy_bullet:
+            # OPTIMIZATION: Check enemy collisions
             for e in list(gs.enemies):
-                if (b.x, b.y) == (e.x, e.y) and id(e) not in b.hit_enemies:
+                if bullet_pos == (e.x, e.y) and id(e) not in b.hit_enemies:
                     if e.take_damage(b.damage):
                         gs.player.score += e.score_value
                         gs.player.add_kill(e.type)
+                        gs.enemies_killed_this_level += 1
                         try:
                             gs.enemies.remove(e)
                         except ValueError:
@@ -699,8 +773,7 @@ def step_bullets(gs):
                     if not b.pierce_walls:
                         break
         else:
-            # Detección de colisión con jugador
-            if (b.x, b.y) == (gs.player.x, gs.player.y):
+            if bullet_pos == (gs.player.x, gs.player.y):
                 if gs.player.take_damage():
                     apply_damage_stun(gs)
                     play_sound('hit')
@@ -714,10 +787,11 @@ def step_bullets(gs):
 def enemy_detects_player(e, gs):
     if not gs.player:
         return False
+    # OPTIMIZATION: Use squared distance to avoid sqrt
     dx = gs.player.x - e.x
     dy = gs.player.y - e.y
-    distance = (dx * dx + dy * dy) ** 0.5
-    return distance <= e.aggro_radius
+    distance_squared = dx * dx + dy * dy
+    return distance_squared <= e.aggro_radius * e.aggro_radius
 
 def can_enemy_move_to(gs, nx, ny, occupied):
     if not gs.map.in_bounds(nx, ny):
@@ -744,9 +818,15 @@ def move_enemies(gs):
     if time.time() < gs.stunned_until or not gs.player:
         return
         
+    current_time = time.time()
+    if current_time - gs._last_enemy_move_time < gs._enemy_move_interval:
+        return
+        
+    gs._last_enemy_move_time = current_time
+        
     occupied = set((e.x, e.y) for e in gs.enemies)
     
-    # Primero mover enemigos que están en la misma posición
+    # OPTIMIZATION: Handle stuck enemies first
     for e in list(gs.enemies):
         count_at_pos = sum(1 for other in gs.enemies if (other.x, other.y) == (e.x, e.y))
         if count_at_pos > 1:
@@ -755,12 +835,11 @@ def move_enemies(gs):
     for e in list(gs.enemies):
         detected = enemy_detects_player(e, gs)
         
-        # LÓGICA DE DISPARO DEL SNIPER
+        # SNIPER SHOOTING LOGIC
         if e.type == "sniper" and detected and e.can_shoot():
             dx = gs.player.x - e.x
             dy = gs.player.y - e.y
             
-            # Determinar dirección principal de disparo
             if abs(dx) > abs(dy):
                 shot_dx = 1 if dx > 0 else -1
                 shot_dy = 0
@@ -768,7 +847,6 @@ def move_enemies(gs):
                 shot_dy = 1 if dy > 0 else -1
                 shot_dx = 0
                 
-            # Verificar línea de visión
             has_line_of_sight = True
             check_x, check_y = e.x, e.y
             
@@ -788,19 +866,18 @@ def move_enemies(gs):
                 enemy_fire_bullet(e, gs, shot_dx, shot_dy)
                 continue
         
-        # MOVIMIENTO
-        current_tick = int(time.time() * 10)
-        if current_tick % e.speed != 0:
-            continue
-            
         if detected:
             dx = gs.player.x - e.x
             dy = gs.player.y - e.y
-            distance = (dx * dx + dy * dy) ** 0.5
             
-            if distance <= 2:
-                choices = [(1 if dx > 0 else -1 if dx < 0 else 0, 
-                          1 if dy > 0 else -1 if dy < 0 else 0)]
+            # OPTIMIZATION: Use squared distance
+            distance_squared = dx * dx + dy * dy
+            
+            if distance_squared <= 2.25:  # 1.5 squared
+                if gs.player.take_damage():
+                    apply_damage_stun(gs)
+                    play_sound('hit')
+                continue
             else:
                 if abs(dx) > abs(dy):
                     choices = [(1 if dx > 0 else -1, 0), (0, 1 if dy > 0 else -1)]
@@ -831,141 +908,212 @@ def move_enemies(gs):
         else:
             try_random_enemy_move(e, gs, occupied)
             
-        # CORREGIDO: Mejor manejo de colisión con jugador
         if (e.x, e.y) == (gs.player.x, gs.player.y):
             if gs.player.take_damage():
                 apply_damage_stun(gs)
                 play_sound('hit')
-            # El enemigo no se elimina automáticamente al dañar al jugador
-            # Solo se elimina si muere por balas
 
-def draw_game(stdscr, gs, offset_y=2, offset_x=0):
+def draw_game(stdscr, gs):
     stdscr.erase()
     curses.curs_set(0)
     max_y, max_x = stdscr.getmaxyx()
+    
+    if max_y < MIN_GAME_HEIGHT or max_x < MIN_GAME_WIDTH:
+        try:
+            stdscr.addstr(0, 0, f"Terminal too small: {max_x}x{max_y}", curses.color_pair(1))
+            stdscr.addstr(1, 0, f"Minimum: {MIN_GAME_WIDTH}x{MIN_GAME_HEIGHT}", curses.color_pair(1))
+        except curses.error:
+            pass
+        stdscr.refresh()
+        return
+        
     if gs.map is None or gs.player is None:
         return
         
-    # Actualizar power-up activo
     gs.player.update_active_powerup()
         
     grid = gs.map.to_grid()
-    view_h = min(gs.map.height, max_y - offset_y - 3)
-    view_w = min(gs.map.width, max_x - offset_x - 1)
     
+    hud_height = HUD_LINES
+    game_area_height = max_y - hud_height
+    
+    view_h = min(gs.map.height, game_area_height)
+    view_w = min(gs.map.width, max_x)
+    
+    offset_x = max(0, gs.player.x - view_w // 2)
+    offset_y = max(0, gs.player.y - view_h // 2)
+    
+    offset_x = min(offset_x, gs.map.width - view_w)
+    offset_y = min(offset_y, gs.map.height - view_h)
+    
+    # OPTIMIZATION: Pre-calculate visible area
+    visible_area = set()
+    
+    # Draw terrain and collect visible positions
     for y in range(view_h):
         for x in range(view_w):
-            try:
-                ch = grid[y][x]
-                if ch == WALL:
-                    stdscr.addch(offset_y + y, offset_x + x, ch, curses.color_pair(1))
-                else:
-                    stdscr.addch(offset_y + y, offset_x + x, ch, curses.color_pair(2))
-            except curses.error:
-                pass
+            map_x, map_y = offset_x + x, offset_y + y
+            if 0 <= map_x < gs.map.width and 0 <= map_y < gs.map.height:
+                try:
+                    ch = grid[map_y][map_x]
+                    if ch == WALL:
+                        stdscr.addch(hud_height + y, x, ch, curses.color_pair(1))
+                    else:
+                        stdscr.addch(hud_height + y, x, ch, curses.color_pair(2))
+                    visible_area.add((map_x, map_y))
+                except curses.error:
+                    pass
                 
+    # Draw items only in visible area
     for (ax, ay) in gs.ammos:
-        if 0 <= ay < view_h and 0 <= ax < view_w:
+        if (ax, ay) in visible_area:
             try:
-                stdscr.addch(offset_y + ay, offset_x + ax, AMMO_CHAR, curses.color_pair(6))
+                screen_y = hud_height + (ay - offset_y)
+                screen_x = ax - offset_x
+                if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height):
+                    stdscr.addch(screen_y, screen_x, AMMO_CHAR, curses.color_pair(6))
             except curses.error:
                 pass
                 
     for (px, py, ptype) in gs.powerups:
-        if 0 <= py < view_h and 0 <= px < view_w:
+        if (px, py) in visible_area:
             try:
-                if ptype == "health":
-                    stdscr.addch(offset_y + py, offset_x + px, HEALTH_CHAR, curses.color_pair(8))
-                elif ptype == "ultrafire":
-                    stdscr.addch(offset_y + py, offset_x + px, ULTRAFIRE_CHAR, curses.color_pair(9))
-                elif ptype == "shield":
-                    stdscr.addch(offset_y + py, offset_x + px, SHIELD_CHAR, curses.color_pair(10))
-                elif ptype == "invincibility":
-                    stdscr.addch(offset_y + py, offset_x + px, INVINCIBILITY_CHAR, curses.color_pair(15))
-                elif ptype == "speed":
-                    stdscr.addch(offset_y + py, offset_x + px, SPEED_CHAR, curses.color_pair(16))
+                screen_y = hud_height + (py - offset_y)
+                screen_x = px - offset_x
+                if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height):
+                    if ptype == "health":
+                        stdscr.addch(screen_y, screen_x, HEALTH_CHAR, curses.color_pair(8))
+                    elif ptype == "ultrafire":
+                        stdscr.addch(screen_y, screen_x, ULTRAFIRE_CHAR, curses.color_pair(9))
+                    elif ptype == "shield":
+                        stdscr.addch(screen_y, screen_x, SHIELD_CHAR, curses.color_pair(10))
+                    elif ptype == "invincibility":
+                        stdscr.addch(screen_y, screen_x, INVINCIBILITY_CHAR, curses.color_pair(15))
+                    elif ptype == "speed":
+                        stdscr.addch(screen_y, screen_x, SPEED_CHAR, curses.color_pair(16))
             except curses.error:
                 pass
                 
-    if gs.exit:
+    if gs.exit and gs.exit in visible_area:
         ex, ey = gs.exit
-        if 0 <= ey < view_h and 0 <= ex < view_w:
-            try:
-                stdscr.addch(offset_y + ey, offset_x + ex, EXIT_CHAR, curses.color_pair(7))
-            except curses.error:
-                pass
+        try:
+            screen_y = hud_height + (ey - offset_y)
+            screen_x = ex - offset_x
+            if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height):
+                stdscr.addch(screen_y, screen_x, EXIT_CHAR, curses.color_pair(7))
+        except curses.error:
+            pass
                 
     for e in gs.enemies:
-        if 0 <= e.y < view_h and 0 <= e.x < view_w:
+        if (e.x, e.y) in visible_area:
             try:
-                color_pair = e.color_pair
-                stdscr.addch(offset_y + e.y, offset_x + e.x, e.char, curses.color_pair(color_pair) | curses.A_BOLD)
+                screen_y = hud_height + (e.y - offset_y)
+                screen_x = e.x - offset_x
+                if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height):
+                    stdscr.addch(screen_y, screen_x, e.char, curses.color_pair(e.color_pair) | curses.A_BOLD)
             except curses.error:
                 pass
                 
     for b in gs.bullets:
-        if 0 <= b.y < view_h and 0 <= b.x < view_w:
+        if (b.x, b.y) in visible_area:
             try:
-                color = 5 if not b.is_enemy_bullet else 14
-                stdscr.addch(offset_y + b.y, offset_x + b.x, b.char, curses.color_pair(color) | curses.A_BOLD)
+                screen_y = hud_height + (b.y - offset_y)
+                screen_x = b.x - offset_x
+                if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height):
+                    color = 5 if not b.is_enemy_bullet else 14
+                    stdscr.addch(screen_y, screen_x, b.char, curses.color_pair(color) | curses.A_BOLD)
             except curses.error:
                 pass
                 
-    # Jugador con efectos especiales
     show_player = True
     if time.time() < gs.stunned_until:
-        show_player = int(time.time() * 5) % 2 == 0
+        show_player = int(time.time() * 6) % 2 == 0
     elif gs.player.has_invincibility():
-        show_player = int(time.time() * 8) % 2 == 0
+        show_player = int(time.time() * 10) % 2 == 0
         
-    if show_player and 0 <= gs.player.y < view_h and 0 <= gs.player.x < view_w:
+    if (show_player and 
+        (gs.player.x, gs.player.y) in visible_area):
         try:
-            color = curses.color_pair(3)
-            if gs.player.has_shield_buff():
-                color = curses.color_pair(10)
-            elif gs.player.has_invincibility():
-                color = curses.color_pair(15)
-            elif gs.player.has_speed():
-                color = curses.color_pair(16)
-            stdscr.addch(offset_y + gs.player.y, offset_x + gs.player.x, PLAYER_CHAR, color | curses.A_BOLD)
+            screen_y = hud_height + (gs.player.y - offset_y)
+            screen_x = gs.player.x - offset_x
+            if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height):
+                color = curses.color_pair(3)
+                if gs.player.has_shield_buff():
+                    color = curses.color_pair(10)
+                elif gs.player.has_invincibility():
+                    color = curses.color_pair(15)
+                elif gs.player.has_speed():
+                    color = curses.color_pair(16)
+                    
+                stdscr.addch(screen_y, screen_x, PLAYER_CHAR, color | curses.A_BOLD)
         except curses.error:
             pass
             
-    # HUD v0.5-beta CORREGIDO
+    # HUD - OPTIMIZED with better truncation
     play_time = int(time.time() - gs.start_time)
     minutes = play_time // 60
     seconds = play_time % 60
     
-    # Línea 1: HP, Ammo, SEED
-    shield_indicator = " (+S)" if gs.player.has_shield_buff() else ""
-    hud_line1 = f"HP: {gs.player.hp}{shield_indicator}    Ammo: {gs.player.ammo}    SEED: {gs.seed}"
-    
-    # Línea 2: Power-up, Score, Time  
-    powerup_display = gs.player.active_powerup if gs.player.active_powerup else "None"
-    hud_line2 = f"Power-up: {powerup_display}    Score: {gs.player.score}    Time: {minutes:02d}:{seconds:02d}"
-    
-    # Truncar líneas si son demasiado largas
-    if len(hud_line1) > max_x:
-        hud_line1 = hud_line1[:max_x]
-    if len(hud_line2) > max_x:
-        hud_line2 = hud_line2[:max_x]
+    try:
+        title = f"ESCAPE v0.6-beta - L{gs.level}"  # SHORTENED for performance
+        if len(title) > max_x:
+            title = title[:max_x]
+        stdscr.addstr(0, 0, title, curses.color_pair(1) | curses.A_BOLD)
+    except curses.error:
+        pass
     
     try:
-        stdscr.addstr(0, 0, "ESCAPE THE TERMINAL v0.5-beta", curses.color_pair(1) | curses.A_BOLD)
-        stdscr.addstr(1, 0, hud_line1, curses.color_pair(1))
-        stdscr.addstr(2, 0, hud_line2, curses.color_pair(1))
+        health_bar = "♥" * gs.player.hp + "♡" * (gs.player.max_hp - gs.player.hp)
+        shield_indicator = " [S]" if gs.player.has_shield_buff() else ""  # SHORTENED
+        ammo_info = f"A:{gs.player.ammo}"  # SHORTENED
         
-        # Mostrar nivel actual
-        if 3 < max_y:
-            stdscr.addstr(3, 0, f"Level: {gs.level}/{MAX_LEVEL}", curses.color_pair(1))
-            
-        if gs.lore_message and (offset_y + view_h + 1) < max_y:
+        line2 = f"HP:{health_bar}{shield_indicator} {ammo_info}"
+        if len(line2) > max_x:
+            line2 = line2[:max_x]
+        stdscr.addstr(1, 0, line2, curses.color_pair(1))
+    except curses.error:
+        pass
+    
+    try:
+        powerup_display = gs.player.active_powerup if gs.player.active_powerup else "None"
+        powerup_text = f"P:{powerup_display}"  # SHORTENED
+        score_text = f"S:{gs.player.score}"  # SHORTENED
+        
+        line3 = f"{powerup_text} {score_text}"
+        if len(line3) > max_x:
+            line3 = line3[:max_x]
+        stdscr.addstr(2, 0, line3, curses.color_pair(1))
+    except curses.error:
+        pass
+    
+    try:
+        time_text = f"T:{minutes:02d}:{seconds:02d}"  # SHORTENED
+        enemies_text = f"E:{len(gs.enemies)}"  # SHORTENED
+        seed_text = f"ID:{gs.seed[:4]}..." if len(gs.seed) > 4 else f"ID:{gs.seed}"  # SHORTENED
+        
+        line4 = f"{time_text} {enemies_text} {seed_text}"
+        if len(line4) > max_x:
+            line4 = line4[:max_x]
+        stdscr.addstr(3, 0, line4, curses.color_pair(1))
+    except curses.error:
+        pass
+    
+    try:
+        controls = "Arrows:Move WASD:Shoot P:Pause"
+        if len(controls) > max_x:
+            controls = controls[:max_x]
+        stdscr.addstr(4, 0, controls, curses.color_pair(1))
+    except curses.error:
+        pass
+        
+    if gs.lore_message and (hud_height + view_h + 1) < max_y:
+        try:
             lore_msg = f"> {gs.lore_message}"
             if len(lore_msg) > max_x:
                 lore_msg = lore_msg[:max_x-4] + "..."
-            stdscr.addstr(offset_y + view_h + 1, 0, lore_msg, curses.color_pair(1))
-    except curses.error:
-        pass
+            stdscr.addstr(hud_height + view_h + 1, 0, lore_msg, curses.color_pair(1))
+        except curses.error:
+            pass
         
     stdscr.refresh()
 
@@ -976,6 +1124,8 @@ def show_victory_screen(stdscr, gs):
     play_time = int(time.time() - gs.start_time)
     minutes = play_time // 60
     seconds = play_time % 60
+    
+    max_y, max_x = stdscr.getmaxyx()
     
     try:
         stdscr.addstr(2, 2, "███████ VICTORY! ███████", curses.color_pair(1) | curses.A_BOLD)
@@ -1014,6 +1164,22 @@ def show_game_over(stdscr, gs):
         pass
     stdscr.getch()
 
+def show_level_complete(stdscr, gs):
+    stdscr.nodelay(False)
+    stdscr.erase()
+    
+    try:
+        stdscr.addstr(2, 2, "LEVEL COMPLETE!", curses.color_pair(1) | curses.A_BOLD)
+        stdscr.addstr(4, 2, f"Enemies defeated this level: {gs.enemies_killed_this_level}", curses.color_pair(1))
+        stdscr.addstr(5, 2, f"Total score: {gs.player.score}", curses.color_pair(1))
+        if gs.level % 2 == 0 and gs.player.max_hp < 5:
+            stdscr.addstr(7, 2, "MAX HEALTH INCREASED!", curses.color_pair(8) | curses.A_BOLD)
+        stdscr.addstr(9, 2, "Press any key to continue to next level", curses.color_pair(1))
+    except curses.error:
+        pass
+    stdscr.getch()
+    play_sound('level_up')
+
 def menu(stdscr):
     curses.curs_set(0)
     options = ["Nueva partida", "Cargar partida", "Salir"]
@@ -1031,7 +1197,7 @@ def menu(stdscr):
             
             stdscr.addstr(0, 0, title, curses.color_pair(1) | curses.A_BOLD)
             
-            credit = "By: Dragon56YT"
+            credit = "By: Dragon56YT - v0.6-beta"
             if 1 < max_y:
                 stdscr.addstr(1, 0, credit, curses.color_pair(1))
         except curses.error:
@@ -1047,7 +1213,7 @@ def menu(stdscr):
         
         try:
             if 7 < max_y:
-                stdscr.addstr(7, 2, "v0.5-beta", curses.color_pair(1))
+                stdscr.addstr(7, 2, "Use arrow keys and Enter", curses.color_pair(1))
         except curses.error:
             pass
             
@@ -1077,7 +1243,7 @@ def prompt_seed(stdscr):
     try:
         stdscr.addstr(2, 2, "███████ NEW GAME ███████", curses.color_pair(1) | curses.A_BOLD)
         stdscr.addstr(4, 2, "Enter seed (leave blank for random): ", curses.color_pair(1))
-        stdscr.addstr(6, 2, "Secret seeds: GOD, H4CK3R", curses.color_pair(1))
+        stdscr.addstr(6, 2, "Secret seeds: GOD, H4CK3R, SAFE", curses.color_pair(1))
         stdscr.addstr(8, 2, "Press ESC to return to main menu", curses.color_pair(1))
     except curses.error:
         pass
@@ -1201,20 +1367,28 @@ def run_game(stdscr, gs):
     gs._last_key = None
     gs._next_repeat_time = 0.0
 
+    # OPTIMIZATION: Frame rate limiting
+    target_fps = 30
+    frame_duration = 1.0 / target_fps
+
     while True:
         current_time = time.time()
         elapsed = current_time - last_time
-        if elapsed < 0.03:
-            time.sleep(0.005)
+        
+        # OPTIMIZATION: Proper frame rate limiting
+        if elapsed < frame_duration:
+            time.sleep(frame_duration - elapsed)
             continue
+            
         last_time = current_time
         tick += 1
 
-        try:
-            key = stdscr.getch()
-        except Exception:
-            key = -1
+        # OPTIMIZATION: Periodic game state optimization
+        if tick % 60 == 0:  # Every ~2 seconds at 30 FPS
+            gs.optimize_game_state()
 
+        key = stdscr.getch()
+        
         move_delta = None
         shoot_delta = None
 
@@ -1259,25 +1433,24 @@ def run_game(stdscr, gs):
                 else:
                     gs._last_key = None
         else:
-            if gs._last_key is not None and current_time > gs._next_repeat_time + 1.0:
+            if gs._last_key is not None and current_time > gs._next_repeat_time + 0.5:
                 gs._last_key = None
 
         if move_delta:
             steps = 2 if gs.player.has_speed() else 1
             for step in range(steps):
-                if gs.player and gs.player.hp > 0:
+                if gs.player and gs.player.hp > 0 and gs.player.can_move():
                     move_player(gs, move_delta[0], move_delta[1])
                 else:
                     break
                     
-        if shoot_delta:
+        if shoot_delta and gs.player.can_shoot():
             fire_bullet(gs, shoot_delta[0], shoot_delta[1])
 
         if current_time >= gs.stunned_until:
             step_bullets(gs)
 
-        if tick % 6 == 0 and current_time >= gs.stunned_until:
-            move_enemies(gs)
+        move_enemies(gs)
 
         if gs.exit and gs.player and (gs.player.x, gs.player.y) == gs.exit:
             gs.player.score += 1000 * gs.level
@@ -1285,6 +1458,7 @@ def run_game(stdscr, gs):
             if gs.level > MAX_LEVEL:
                 show_victory_screen(stdscr, gs)
                 return
+            show_level_complete(stdscr, gs)
             gs.new_level()
 
         if gs.player and gs.player.hp <= 0:
