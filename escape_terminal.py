@@ -1,7 +1,7 @@
 """
 Escape the Terminal - single-file Python roguelike for the terminal
 By: Dragon56YT
-Version: v0.7-beta
+Version: v0.8-beta
 """
 
 import curses
@@ -11,14 +11,21 @@ import time
 import os
 import pickle
 import base64
+import glob
 from collections import deque
+from datetime import datetime
 
-SAVE_FILE = "escape_terminal_save.json"
-SAVE_VERSION = "0.7"
+# NUEVO: Sistema de guardados mejorado
+SAVE_DIR = "escape_saves"
+AUTOSAVE_FILE = "autosave.json"
+MAX_SAVE_SLOTS = 5
+SAVE_VERSION = "0.8"
+
+# Lore actualizado con más líneas
 LORE_LINES = [
     "UNAUTHORIZED ACCESS",
     "TRACE IN PROGRESS...",
-    "FIREWALL MOBILIZED",
+    "FIREWALL MOBILIZED", 
     "SYSTEM ROOT AHEAD",
     "ANOMALY DETECTED",
     "EXIT NODE DETECTED",
@@ -28,7 +35,14 @@ LORE_LINES = [
     "WHO CONTROLS THIS LABYRINTH?",
     "DON'T TRUST THE NUMBERS YOU SEE ON SCREEN.",
     "DATA STREAMS WHISPER THINGS YOU SHOULDN'T KNOW.",
-    "A SHADOW MOVES WHERE THERE IS NO LIGHT."
+    "A SHADOW MOVES WHERE THERE IS NO LIGHT.",
+    "THE WALLS ARE SPEAKING IN BINARY.",
+    "YOUR MEMORY IS NOT YOUR OWN.",
+    "THE EXIT IS A LIE. THE EXIT IS TRUTH.",
+    "THIS MAZE RECONFIGURES ITSELF WHEN YOU BLINK.",
+    "THE ENEMIES REMEMBER YOU FROM LAST TIME.",
+    "YOUR AMMO COUNTS DOWNWARD FROM AN UNKNOWN NUMBER.",
+    "THE TERMINAL IS DREAMING OF ELECTRIC SHEEP."
 ]
 
 # CONSTANTS - OPTIMIZED
@@ -92,6 +106,10 @@ def to_xy(pos):
 
 def bresenham_line(x0, y0, x1, y1):
     """Bresenham's line algorithm for accurate line-of-sight checking"""
+    # FIX: Manejar caso donde los puntos son iguales
+    if x0 == x1 and y0 == y1:
+        return [(x0, y0)]
+        
     points = []
     dx = abs(x1 - x0)
     dy = abs(y1 - y0)
@@ -144,6 +162,8 @@ class GameMap:
     def to_grid(self):
         current_time = time.time()
         if self._grid_cache is None or current_time - self._cache_time > CACHE_DURATION:
+            # FIX: Limpiar cache anterior para evitar memory leaks
+            self._grid_cache = None
             self._grid_cache = [[FLOOR for _ in range(self.width)] for __ in range(self.height)]
             for (wx, wy) in self.walls:
                 if 0 <= wy < self.height and 0 <= wx < self.width:
@@ -170,6 +190,7 @@ class GameMap:
         return GameMap(w, h, walls=walls)
 
 def ensure_path(width, height, wall_chance, rng, max_tries=200):
+    # FIX: Garantizar que siempre retorne un mapa válido
     for _ in range(max_tries):
         walls = set()
         for y in range(height):
@@ -187,12 +208,16 @@ def ensure_path(width, height, wall_chance, rng, max_tries=200):
         if is_reachable(gm, (sx, sy), (ex, ey)):
             return gm, (sx, sy), (ex, ey)
     
-    # Fallback: minimal maze
+    # FALLBACK: Crear un pasillo garantizado si fallan los intentos
     walls = set()
     for y in range(height):
         for x in range(width):
             if x == 0 or y == 0 or x == width - 1 or y == height - 1:
                 walls.add((x, y))
+            # Crear un pasillo central
+            elif (x != width // 2 and y != height // 2) and rng.random() < 0.3:
+                walls.add((x, y))
+                
     gm = GameMap(width, height, walls=walls)
     return gm, (1, 1), (width - 2, height - 2)
 
@@ -233,9 +258,9 @@ class Player:
         self._last_damage_time = 0
         self._damage_cooldown = 0.5
         self._last_move_time = 0
-        self._move_cooldown = 0.12
+        self._move_cooldown = 0.12  # Base, se ajusta con power-ups
         self._last_shot_time = 0
-        self._shot_cooldown = 0.15
+        self._shot_cooldown = 0.15  # Base, se ajusta con power-ups
 
     def pos(self):
         return (self.x, self.y)
@@ -256,10 +281,14 @@ class Player:
         return time.time() - self._last_damage_time > self._damage_cooldown
 
     def can_move(self):
-        return time.time() - self._last_move_time > self._move_cooldown
+        # FIX: Actualizar cooldown dinámicamente para power-ups de velocidad
+        current_cooldown = 0.06 if self.has_speed() else 0.12
+        return time.time() - self._last_move_time > current_cooldown
 
     def can_shoot(self):
-        return time.time() - self._last_shot_time > self._shot_cooldown
+        # FIX: Actualizar cooldown dinámicamente para power-ups de velocidad
+        current_cooldown = 0.08 if self.has_speed() else 0.15
+        return time.time() - self._last_shot_time > current_cooldown
 
     def take_damage(self, amount=1):
         if not self.can_take_damage():
@@ -368,6 +397,8 @@ class Enemy:
             
         self.last_move_time = 0
         self.move_cooldown = 0.5 / (self.speed * 0.5)
+        # FIX: Identificador único para colisiones
+        self._unique_id = f"{id(self)}_{time.time()}"
 
     def pos(self):
         return (self.x, self.y)
@@ -416,6 +447,7 @@ class Bullet:
         self.pierce_walls = pierce_walls
         self.char = '*' if not is_enemy_bullet else '!'
         self.is_enemy_bullet = is_enemy_bullet
+        # FIX: Usar tuplas de posición en lugar de id() para evitar colisiones
         self.hit_enemies = set()
         self.created_time = time.time()
         self.max_lifetime = 4.0
@@ -463,6 +495,156 @@ def _list_to_state(obj):
     except Exception:
         return None
 
+# NUEVO: Sistema de gestión de guardados
+class SaveManager:
+    def __init__(self):
+        self.save_dir = SAVE_DIR
+        self.ensure_save_dir()
+    
+    def ensure_save_dir(self):
+        """Crear directorio de guardados si no existe"""
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir)
+    
+    def get_save_path(self, slot_number=None, filename=None):
+        """Obtener ruta completa del archivo de guardado"""
+        if filename:
+            return os.path.join(self.save_dir, filename)
+        elif slot_number:
+            return os.path.join(self.save_dir, f"slot_{slot_number}.json")
+        else:
+            return os.path.join(self.save_dir, AUTOSAVE_FILE)
+    
+    def list_saves(self):
+        """Listar todas las partidas guardadas con metadatos"""
+        saves = []
+        
+        # Buscar archivos de slot
+        for slot_file in glob.glob(os.path.join(self.save_dir, "slot_*.json")):
+            try:
+                with open(slot_file, 'r') as f:
+                    data = json.load(f)
+                
+                metadata = data.get('metadata', {})
+                saves.append({
+                    'filename': os.path.basename(slot_file),
+                    'slot_number': metadata.get('slot_number', 0),
+                    'save_name': metadata.get('save_name', 'Unnamed'),
+                    'level': metadata.get('level', 1),
+                    'score': metadata.get('score', 0),
+                    'play_time': metadata.get('play_time', 0),
+                    'date_modified': metadata.get('date_modified', 'Unknown')
+                })
+            except Exception:
+                continue
+        
+        # Ordenar por slot number
+        saves.sort(key=lambda x: x['slot_number'])
+        return saves
+    
+    def get_empty_slots(self):
+        """Obtener slots vacíos disponibles"""
+        existing_slots = {save['slot_number'] for save in self.list_saves()}
+        return [i for i in range(1, MAX_SAVE_SLOTS + 1) if i not in existing_slots]
+    
+    def save_game(self, game_state, slot_number=None, save_name=None, is_autosave=False):
+        """Guardar partida en un slot específico o autosave"""
+        try:
+            if is_autosave:
+                save_path = self.get_save_path()
+                slot_number = "autosave"
+            else:
+                if not slot_number:
+                    return False, "No slot specified"
+                save_path = self.get_save_path(slot_number)
+            
+            # Preparar metadatos
+            play_time = int(time.time() - game_state.start_time)
+            metadata = {
+                'version': SAVE_VERSION,
+                'slot_number': slot_number,
+                'save_name': save_name or f"Slot {slot_number}",
+                'level': game_state.level,
+                'score': game_state.player.score if game_state.player else 0,
+                'play_time': play_time,
+                'seed': game_state.seed,
+                'date_created': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'date_modified': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+            # Preparar datos completos
+            save_data = {
+                'metadata': metadata,
+                'game_data': game_state.serialize()
+            }
+            
+            # Guardar con archivo temporal para evitar corrupción
+            temp_path = save_path + '.tmp'
+            with open(temp_path, 'w') as f:
+                json.dump(save_data, f, indent=2)
+            
+            # Reemplazar archivo original
+            if os.path.exists(save_path):
+                os.remove(save_path)
+            os.rename(temp_path, save_path)
+            
+            return True, f"Game saved to slot {slot_number}"
+            
+        except Exception as e:
+            # Limpiar archivo temporal en caso de error
+            try:
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+            except:
+                pass
+            return False, f"Save failed: {str(e)}"
+    
+    def load_game(self, slot_number=None, filename=None):
+        """Cargar partida desde un slot o archivo específico"""
+        try:
+            if filename:
+                save_path = self.get_save_path(filename=filename)
+            elif slot_number == "autosave":
+                save_path = self.get_save_path()
+            else:
+                save_path = self.get_save_path(slot_number)
+            
+            if not os.path.exists(save_path):
+                return None, "Save file not found"
+            
+            with open(save_path, 'r') as f:
+                save_data = json.load(f)
+            
+            # Verificar versión
+            metadata = save_data.get('metadata', {})
+            if metadata.get('version') != SAVE_VERSION:
+                return None, f"Save version mismatch. Expected {SAVE_VERSION}, got {metadata.get('version')}"
+            
+            # Cargar estado del juego
+            game_data = save_data.get('game_data', {})
+            game_state = GameState.deserialize(game_data)
+            
+            # Aplicar efectos de semilla si existen
+            if hasattr(game_state, 'seed'):
+                game_state.apply_seed_effects_on_start()
+            
+            return game_state, "Game loaded successfully"
+            
+        except Exception as e:
+            return None, f"Load failed: {str(e)}"
+    
+    def delete_save(self, slot_number):
+        """Eliminar partida guardada"""
+        try:
+            save_path = self.get_save_path(slot_number)
+            if os.path.exists(save_path):
+                os.remove(save_path)
+                return True, "Save deleted"
+            else:
+                return False, "Save file not found"
+        except Exception as e:
+            return False, f"Delete failed: {str(e)}"
+
 class GameState:
     def __init__(self, level=1, seed=None):
         self.level = int(level)
@@ -486,6 +668,7 @@ class GameState:
         self._enemy_move_interval = 0.35
         self._last_optimization_time = 0
         self.game_version = SAVE_VERSION
+        self.current_save_slot = None  # NUEVO: Slot actual de guardado
 
     def calculate_enemy_distribution(self):
         if self.level == 1:
@@ -505,7 +688,14 @@ class GameState:
         h = min(40, base_h + (self.level - 1) * 1)
         wall_chance = min(0.20 + (self.level - 1) * 0.01, 0.35)
         
-        self.map, start, exitpos = ensure_path(w, h, wall_chance, self.rng)
+        # FIX: Asegurar que siempre tenemos un mapa válido
+        try:
+            self.map, start, exitpos = ensure_path(w, h, wall_chance, self.rng)
+        except Exception as e:
+            # Fallback absoluto si ensure_path falla
+            self.map = GameMap(w, h, walls=set())
+            start, exitpos = (1, 1), (w-2, h-2)
+        
         self.exit = exitpos
         
         if self.player is None:
@@ -519,12 +709,9 @@ class GameState:
 
         self.apply_seed_effects_on_start()
         
-        # Apply speed effect if active
+        # Aplicar efecto de velocidad si está activo
         if 'SPEED' in self.special_effects:
             self._enemy_move_interval = 0.2
-            if self.player:
-                self.player._move_cooldown = 0.06
-                self.player._shot_cooldown = 0.08
         
         enemy_count = min(MAX_ENEMIES, 3 + max(0, (self.level - 1) * 2))
         if 'SAFE' in self.special_effects:
@@ -611,9 +798,6 @@ class GameState:
                 self.player.ammo = 999
         elif s == 'SPEED':
             self.special_effects.add('SPEED')
-            if self.player:
-                self.player._move_cooldown = 0.06
-                self.player._shot_cooldown = 0.08
             self._enemy_move_interval = 0.2
 
     def optimize_game_state(self):
@@ -623,6 +807,7 @@ class GameState:
             
         self._last_optimization_time = current_time
         
+        # FIX: Limitar balas más agresivamente
         self.bullets = [b for b in self.bullets if not b.is_expired()]
         
         if len(self.bullets) > MAX_ACTIVE_BULLETS:
@@ -649,7 +834,8 @@ class GameState:
             'start_time': self.start_time,
             'stunned_until': self.stunned_until,
             'enemies_killed_this_level': self.enemies_killed_this_level,
-            '_last_enemy_move_time': self._last_enemy_move_time
+            '_last_enemy_move_time': self._last_enemy_move_time,
+            'current_save_slot': self.current_save_slot  # NUEVO
         }
         try:
             rng_state = self.rng.getstate()
@@ -663,22 +849,29 @@ class GameState:
         if not isinstance(d, dict):
             raise ValueError('Invalid save data')
             
-        version = d.get('version', '0.6')
-        if version != SAVE_VERSION:
-            # Try to handle older versions gracefully
-            print(f"Warning: Save version {version} may be incompatible with game version {SAVE_VERSION}")
-            
+        version = d.get('version', '0.7')
+        
         gs = GameState(level=d.get('level', 1), seed=d.get('seed'))
         
-        # Handle missing data gracefully
+        # FIX: Manejo de errores mejorado para evitar estados inconsistentes
         try:
             if d.get('map'):
                 gs.map = GameMap.deserialize(d['map'])
             if d.get('player'):
                 gs.player = Player.deserialize(d['player'])
             
-            gs.enemies = [Enemy.deserialize(ed) for ed in d.get('enemies', []) if Enemy.deserialize(ed)]
-            gs.bullets = [Bullet.deserialize(bd) for bd in d.get('bullets', []) if Bullet.deserialize(bd)]
+            gs.enemies = []
+            for ed in d.get('enemies', []):
+                enemy = Enemy.deserialize(ed)
+                if enemy:
+                    gs.enemies.append(enemy)
+                    
+            gs.bullets = []
+            for bd in d.get('bullets', []):
+                bullet = Bullet.deserialize(bd)
+                if bullet:
+                    gs.bullets.append(bullet)
+                    
             gs.ammos = [tuple(a) for a in d.get('ammos', []) if isinstance(a, list) and len(a) == 2]
             gs.powerups = [tuple(p) for p in d.get('powerups', []) if isinstance(p, list) and len(p) == 3]
             
@@ -691,6 +884,7 @@ class GameState:
             gs.stunned_until = d.get('stunned_until', 0.0)
             gs.enemies_killed_this_level = d.get('enemies_killed_this_level', 0)
             gs._last_enemy_move_time = d.get('_last_enemy_move_time', time.time())
+            gs.current_save_slot = d.get('current_save_slot')  # NUEVO
             
             try:
                 if d.get('rng_state'):
@@ -700,42 +894,41 @@ class GameState:
                 
         except Exception as e:
             print(f"Error loading save data: {e}")
-            # If loading fails, create a new level
+            # FIX: Si falla la carga, crear un nuevo nivel en lugar de continuar inconsistente
             if not gs.map or not gs.player:
                 gs.new_level()
                 
         return gs
 
-def save_game(gs):
-    if not gs:
-        return False
-        
-    data = gs.serialize()
-    tmp = SAVE_FILE + '.tmp'
-    try:
-        with open(tmp, 'w') as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp, SAVE_FILE)
-        return True
-    except Exception as e:
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
-        return False
+# NUEVO: Funciones de guardado/load mejoradas
+save_manager = SaveManager()
 
-def load_game():
-    if not os.path.exists(SAVE_FILE):
-        return None
-    try:
-        with open(SAVE_FILE, 'r') as f:
-            data = json.load(f)
-        gs = GameState.deserialize(data)
-        return gs
-    except Exception as e:
-        print(f"Error loading game: {e}")
-        return None
+def save_game(gs, slot_number=None, save_name=None, is_autosave=False):
+    """Guardar partida usando el sistema nuevo"""
+    if not gs:
+        return False, "No game state to save"
+    
+    # Si es autosave, usar el slot actual o crear uno temporal
+    if is_autosave:
+        if gs.current_save_slot:
+            slot_number = gs.current_save_slot
+        else:
+            slot_number = "autosave"
+    
+    success, message = save_manager.save_game(gs, slot_number, save_name, is_autosave)
+    if success and not is_autosave:
+        gs.current_save_slot = slot_number
+    return success, message
+
+def load_game(slot_number=None, filename=None):
+    """Cargar partida usando el sistema nuevo"""
+    return save_manager.load_game(slot_number, filename)
+
+def autosave_game(gs):
+    """Autoguardado automático"""
+    if gs and gs.player and gs.player.hp > 0:
+        return save_game(gs, is_autosave=True)
+    return False, "Cannot autosave"
 
 def play_sound(sound_type):
     try:
@@ -808,9 +1001,10 @@ def fire_bullet(gs, dx, dy):
     if not gs.player.can_shoot():
         return
         
+    # FIX: Limitar balas más agresivamente
     if len(gs.bullets) >= MAX_ACTIVE_BULLETS:
         gs.bullets.sort(key=lambda b: b.created_time)
-        gs.bullets = gs.bullets[-MAX_ACTIVE_BULLETS//2:]
+        gs.bullets = gs.bullets[-(MAX_ACTIVE_BULLETS//2):]
         
     if not gs.player.has_ultrafire() and 'GOD' not in gs.special_effects:
         gs.player.ammo -= 1
@@ -853,14 +1047,15 @@ def step_bullets(gs):
         
         if not b.is_enemy_bullet:
             for e in gs.enemies[:]:
-                if bullet_pos == (e.x, e.y) and id(e) not in b.hit_enemies:
+                # FIX: Usar posición en lugar de id() para evitar colisiones
+                if bullet_pos == (e.x, e.y) and bullet_pos not in b.hit_enemies:
                     if e.take_damage(b.damage):
                         if gs.player:
                             gs.player.score += e.score_value
                             gs.player.add_kill(e.type)
                             gs.enemies_killed_this_level += 1
                         gs.enemies.remove(e)
-                    b.hit_enemies.add(id(e))
+                    b.hit_enemies.add(bullet_pos)
                     hit_something = True
                     play_sound('hit')
                     if not b.pierce_walls:
@@ -976,7 +1171,9 @@ def move_enemies(gs):
             for dxm, dym in choices:
                 nx, ny = e.x + dxm, e.y + dym
                 if can_enemy_move_to(gs, nx, ny, occupied):
-                    occupied.discard((e.x, e.y))
+                    # FIX: Manejo seguro del occupied set
+                    old_pos = (e.x, e.y)
+                    occupied.discard(old_pos)
                     e.x, e.y = nx, ny
                     occupied.add((e.x, e.y))
                     moved = True
@@ -989,7 +1186,8 @@ def move_enemies(gs):
                 for dxm, dym in all_dirs:
                     nx, ny = e.x + dxm, e.y + dym
                     if can_enemy_move_to(gs, nx, ny, occupied):
-                        occupied.discard((e.x, e.y))
+                        old_pos = (e.x, e.y)
+                        occupied.discard(old_pos)
                         e.x, e.y = nx, ny
                         occupied.add((e.x, e.y))
                         moved = True
@@ -1011,10 +1209,15 @@ def draw_game(stdscr, gs):
     curses.curs_set(0)
     max_y, max_x = stdscr.getmaxyx()
     
+    # FIX: Verificación mejorada de tamaño de terminal
     if max_y < MIN_GAME_HEIGHT or max_x < MIN_GAME_WIDTH:
         try:
-            stdscr.addstr(0, 0, f"Terminal too small: {max_x}x{max_y}", curses.color_pair(1))
-            stdscr.addstr(1, 0, f"Minimum: {MIN_GAME_WIDTH}x{MIN_GAME_HEIGHT}", curses.color_pair(1))
+            msg1 = f"Terminal too small: {max_x}x{max_y}"
+            msg2 = f"Minimum: {MIN_GAME_WIDTH}x{MIN_GAME_HEIGHT}"
+            if len(msg1) <= max_x and 0 < max_y:
+                stdscr.addstr(0, 0, msg1, curses.color_pair(1))
+            if len(msg2) <= max_x and 1 < max_y:
+                stdscr.addstr(1, 0, msg2, curses.color_pair(1))
         except curses.error:
             pass
         stdscr.refresh()
@@ -1030,14 +1233,15 @@ def draw_game(stdscr, gs):
     hud_height = HUD_LINES
     game_area_height = max_y - hud_height
     
-    view_h = min(gs.map.height, game_area_height)
-    view_w = min(gs.map.width, max_x)
+    # FIX: Asegurar que las dimensiones de vista sean válidas
+    view_h = min(gs.map.height, max(1, game_area_height))
+    view_w = min(gs.map.width, max(1, max_x))
     
     offset_x = max(0, gs.player.x - view_w // 2)
     offset_y = max(0, gs.player.y - view_h // 2)
     
-    offset_x = min(offset_x, gs.map.width - view_w)
-    offset_y = min(offset_y, gs.map.height - view_h)
+    offset_x = min(offset_x, max(0, gs.map.width - view_w))
+    offset_y = min(offset_y, max(0, gs.map.height - view_h))
     
     visible_area = set()
     
@@ -1047,11 +1251,15 @@ def draw_game(stdscr, gs):
             if 0 <= map_x < gs.map.width and 0 <= map_y < gs.map.height:
                 try:
                     ch = grid[map_y][map_x]
-                    if ch == WALL:
-                        stdscr.addch(hud_height + y, x, ch, curses.color_pair(1))
-                    else:
-                        stdscr.addch(hud_height + y, x, ch, curses.color_pair(2))
-                    visible_area.add((map_x, map_y))
+                    screen_y = hud_height + y
+                    screen_x = x
+                    # FIX: Verificación adicional de bounds para terminal pequeña
+                    if 0 <= screen_x < max_x and 0 <= screen_y < max_y:
+                        if ch == WALL:
+                            stdscr.addch(screen_y, screen_x, ch, curses.color_pair(1))
+                        else:
+                            stdscr.addch(screen_y, screen_x, ch, curses.color_pair(2))
+                        visible_area.add((map_x, map_y))
                 except curses.error:
                     pass
                 
@@ -1060,7 +1268,7 @@ def draw_game(stdscr, gs):
             try:
                 screen_y = hud_height + (ay - offset_y)
                 screen_x = ax - offset_x
-                if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height):
+                if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height) and screen_y < max_y:
                     stdscr.addch(screen_y, screen_x, AMMO_CHAR, curses.color_pair(6))
             except curses.error:
                 pass
@@ -1070,7 +1278,7 @@ def draw_game(stdscr, gs):
             try:
                 screen_y = hud_height + (py - offset_y)
                 screen_x = px - offset_x
-                if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height):
+                if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height) and screen_y < max_y:
                     if ptype == "health":
                         stdscr.addch(screen_y, screen_x, HEALTH_CHAR, curses.color_pair(8))
                     elif ptype == "ultrafire":
@@ -1089,7 +1297,7 @@ def draw_game(stdscr, gs):
         try:
             screen_y = hud_height + (ey - offset_y)
             screen_x = ex - offset_x
-            if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height):
+            if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height) and screen_y < max_y:
                 stdscr.addch(screen_y, screen_x, EXIT_CHAR, curses.color_pair(7))
         except curses.error:
             pass
@@ -1099,7 +1307,7 @@ def draw_game(stdscr, gs):
             try:
                 screen_y = hud_height + (e.y - offset_y)
                 screen_x = e.x - offset_x
-                if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height):
+                if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height) and screen_y < max_y:
                     attr = curses.color_pair(e.color_pair) | curses.A_BOLD
                     if e.health < (2 if e.type == "tank" else 1):
                         attr |= curses.A_BLINK
@@ -1112,7 +1320,7 @@ def draw_game(stdscr, gs):
             try:
                 screen_y = hud_height + (b.y - offset_y)
                 screen_x = b.x - offset_x
-                if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height):
+                if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height) and screen_y < max_y:
                     color = 5 if not b.is_enemy_bullet else 14
                     stdscr.addch(screen_y, screen_x, b.char, curses.color_pair(color) | curses.A_BOLD)
             except curses.error:
@@ -1129,7 +1337,7 @@ def draw_game(stdscr, gs):
         try:
             screen_y = hud_height + (gs.player.y - offset_y)
             screen_x = gs.player.x - offset_x
-            if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height):
+            if 0 <= screen_x < view_w and 0 <= screen_y < (view_h + hud_height) and screen_y < max_y:
                 color = curses.color_pair(3)
                 if gs.player.has_shield_buff():
                     color = curses.color_pair(10)
@@ -1152,7 +1360,7 @@ def draw_game(stdscr, gs):
     seconds = play_time % 60
     
     try:
-        title = f"ESCAPE v0.7 - L{gs.level}"
+        title = f"ESCAPE v0.8 - L{gs.level}"
         if 'SAFE' in gs.special_effects:
             title += " [SAFE]"
         elif 'GOD' in gs.special_effects:
@@ -1162,7 +1370,8 @@ def draw_game(stdscr, gs):
             
         if len(title) > max_x:
             title = title[:max_x]
-        stdscr.addstr(0, 0, title, curses.color_pair(1) | curses.A_BOLD)
+        if 0 < max_y:
+            stdscr.addstr(0, 0, title, curses.color_pair(1) | curses.A_BOLD)
     except curses.error:
         pass
     
@@ -1176,7 +1385,8 @@ def draw_game(stdscr, gs):
         line2 = f"HP:{health_bar}{shield_indicator} {ammo_info}"
         if len(line2) > max_x:
             line2 = line2[:max_x]
-        stdscr.addstr(1, 0, line2, curses.color_pair(1))
+        if 1 < max_y:
+            stdscr.addstr(1, 0, line2, curses.color_pair(1))
     except curses.error:
         pass
     
@@ -1188,7 +1398,8 @@ def draw_game(stdscr, gs):
         line3 = f"{powerup_text} {score_text}"
         if len(line3) > max_x:
             line3 = line3[:max_x]
-        stdscr.addstr(2, 0, line3, curses.color_pair(1))
+        if 2 < max_y:
+            stdscr.addstr(2, 0, line3, curses.color_pair(1))
     except curses.error:
         pass
     
@@ -1200,12 +1411,14 @@ def draw_game(stdscr, gs):
         line4 = f"{time_text} {enemies_text}"
         if len(line4) > max_x:
             line4 = line4[:max_x]
-        stdscr.addstr(3, 0, line4, curses.color_pair(1))
+        if 3 < max_y:
+            stdscr.addstr(3, 0, line4, curses.color_pair(1))
         
         line5 = f"{seed_text}"
         if len(line5) > max_x:
             line5 = line5[:max_x]
-        stdscr.addstr(4, 0, line5, curses.color_pair(1))
+        if 4 < max_y:
+            stdscr.addstr(4, 0, line5, curses.color_pair(1))
     except curses.error:
         pass
     
@@ -1213,7 +1426,8 @@ def draw_game(stdscr, gs):
         controls = "Arrows/Wasd:Move QEZC:DiagShoot P:Pause"
         if len(controls) > max_x:
             controls = controls[:max_x]
-        stdscr.addstr(5, 0, controls, curses.color_pair(1))
+        if 5 < max_y:
+            stdscr.addstr(5, 0, controls, curses.color_pair(1))
     except curses.error:
         pass
         
@@ -1242,16 +1456,26 @@ def show_victory_screen(stdscr, gs):
     max_y, max_x = stdscr.getmaxyx()
     
     try:
-        stdscr.addstr(2, 2, "███████ VICTORY! ███████", curses.color_pair(1) | curses.A_BOLD)
-        stdscr.addstr(4, 2, "SYSTEM ESCAPED - TERMINAL RESTORED", curses.color_pair(1))
-        stdscr.addstr(6, 2, f"Final Score: {gs.player.score}", curses.color_pair(1))
-        stdscr.addstr(7, 2, f"Levels Completed: {gs.level}", curses.color_pair(1))
-        stdscr.addstr(8, 2, f"Time: {minutes:02d}:{seconds:02d}", curses.color_pair(1))
-        stdscr.addstr(10, 2, "Enemies Defeated:", curses.color_pair(1))
-        stdscr.addstr(11, 4, f"Basic: {gs.player.enemies_killed['normal']}", curses.color_pair(1))
-        stdscr.addstr(12, 4, f"Tanks: {gs.player.enemies_killed['tank']}", curses.color_pair(1))
-        stdscr.addstr(13, 4, f"Snipers: {gs.player.enemies_killed['sniper']}", curses.color_pair(1))
-        stdscr.addstr(15, 2, "Press any key to return to menu", curses.color_pair(1))
+        if 2 < max_y and 2 < max_x:
+            stdscr.addstr(2, 2, "███████ VICTORY! ███████", curses.color_pair(1) | curses.A_BOLD)
+        if 4 < max_y and 2 < max_x:
+            stdscr.addstr(4, 2, "SYSTEM ESCAPED - TERMINAL RESTORED", curses.color_pair(1))
+        if 6 < max_y and 2 < max_x:
+            stdscr.addstr(6, 2, f"Final Score: {gs.player.score}", curses.color_pair(1))
+        if 7 < max_y and 2 < max_x:
+            stdscr.addstr(7, 2, f"Levels Completed: {gs.level}", curses.color_pair(1))
+        if 8 < max_y and 2 < max_x:
+            stdscr.addstr(8, 2, f"Time: {minutes:02d}:{seconds:02d}", curses.color_pair(1))
+        if 10 < max_y and 2 < max_x:
+            stdscr.addstr(10, 2, "Enemies Defeated:", curses.color_pair(1))
+        if 11 < max_y and 4 < max_x:
+            stdscr.addstr(11, 4, f"Basic: {gs.player.enemies_killed['normal']}", curses.color_pair(1))
+        if 12 < max_y and 4 < max_x:
+            stdscr.addstr(12, 4, f"Tanks: {gs.player.enemies_killed['tank']}", curses.color_pair(1))
+        if 13 < max_y and 4 < max_x:
+            stdscr.addstr(13, 4, f"Snipers: {gs.player.enemies_killed['sniper']}", curses.color_pair(1))
+        if 15 < max_y and 2 < max_x:
+            stdscr.addstr(15, 2, "Press any key to return to menu", curses.color_pair(1))
     except curses.error:
         pass
     stdscr.getch()
@@ -1267,16 +1491,27 @@ def show_game_over(stdscr, gs):
     minutes = play_time // 60
     seconds = play_time % 60
     
+    max_y, max_x = stdscr.getmaxyx()
+    
     try:
-        stdscr.addstr(2, 2, "SIGNAL LOST - GAME OVER", curses.color_pair(1) | curses.A_BOLD)
-        stdscr.addstr(4, 2, f"You reached level {gs.level}", curses.color_pair(1))
-        stdscr.addstr(5, 2, f"Final Score: {gs.player.score}", curses.color_pair(1))
-        stdscr.addstr(6, 2, f"Time: {minutes:02d}:{seconds:02d}", curses.color_pair(1))
-        stdscr.addstr(8, 2, "Enemies Defeated:", curses.color_pair(1))
-        stdscr.addstr(9, 4, f"Basic: {gs.player.enemies_killed['normal']}", curses.color_pair(1))
-        stdscr.addstr(10, 4, f"Tanks: {gs.player.enemies_killed['tank']}", curses.color_pair(1))
-        stdscr.addstr(11, 4, f"Snipers: {gs.player.enemies_killed['sniper']}", curses.color_pair(1))
-        stdscr.addstr(13, 2, "Press any key to return to menu", curses.color_pair(1))
+        if 2 < max_y and 2 < max_x:
+            stdscr.addstr(2, 2, "SIGNAL LOST - GAME OVER", curses.color_pair(1) | curses.A_BOLD)
+        if 4 < max_y and 2 < max_x:
+            stdscr.addstr(4, 2, f"You reached level {gs.level}", curses.color_pair(1))
+        if 5 < max_y and 2 < max_x:
+            stdscr.addstr(5, 2, f"Final Score: {gs.player.score}", curses.color_pair(1))
+        if 6 < max_y and 2 < max_x:
+            stdscr.addstr(6, 2, f"Time: {minutes:02d}:{seconds:02d}", curses.color_pair(1))
+        if 8 < max_y and 2 < max_x:
+            stdscr.addstr(8, 2, "Enemies Defeated:", curses.color_pair(1))
+        if 9 < max_y and 4 < max_x:
+            stdscr.addstr(9, 4, f"Basic: {gs.player.enemies_killed['normal']}", curses.color_pair(1))
+        if 10 < max_y and 4 < max_x:
+            stdscr.addstr(10, 4, f"Tanks: {gs.player.enemies_killed['tank']}", curses.color_pair(1))
+        if 11 < max_y and 4 < max_x:
+            stdscr.addstr(11, 4, f"Snipers: {gs.player.enemies_killed['sniper']}", curses.color_pair(1))
+        if 13 < max_y and 2 < max_x:
+            stdscr.addstr(13, 2, "Press any key to return to menu", curses.color_pair(1))
     except curses.error:
         pass
     stdscr.getch()
@@ -1288,13 +1523,19 @@ def show_level_complete(stdscr, gs):
     stdscr.nodelay(False)
     stdscr.erase()
     
+    max_y, max_x = stdscr.getmaxyx()
+    
     try:
-        stdscr.addstr(2, 2, "LEVEL COMPLETE!", curses.color_pair(1) | curses.A_BOLD)
-        stdscr.addstr(4, 2, f"Enemies defeated this level: {gs.enemies_killed_this_level}", curses.color_pair(1))
-        stdscr.addstr(5, 2, f"Total score: {gs.player.score}", curses.color_pair(1))
-        if gs.level % 2 == 0 and gs.player.max_hp < 5:
+        if 2 < max_y and 2 < max_x:
+            stdscr.addstr(2, 2, "LEVEL COMPLETE!", curses.color_pair(1) | curses.A_BOLD)
+        if 4 < max_y and 2 < max_x:
+            stdscr.addstr(4, 2, f"Enemies defeated this level: {gs.enemies_killed_this_level}", curses.color_pair(1))
+        if 5 < max_y and 2 < max_x:
+            stdscr.addstr(5, 2, f"Total score: {gs.player.score}", curses.color_pair(1))
+        if gs.level % 2 == 0 and gs.player.max_hp < 5 and 7 < max_y and 2 < max_x:
             stdscr.addstr(7, 2, "MAX HEALTH INCREASED!", curses.color_pair(8) | curses.A_BOLD)
-        stdscr.addstr(9, 2, "Press any key to continue to next level", curses.color_pair(1))
+        if 9 < max_y and 2 < max_x:
+            stdscr.addstr(9, 2, "Press any key to continue to next level", curses.color_pair(1))
     except curses.error:
         pass
     stdscr.getch()
@@ -1368,16 +1609,20 @@ def show_tutorial(stdscr):
         max_y, max_x = stdscr.getmaxyx()
         
         try:
-            stdscr.addstr(1, 2, "▄▄▄▄▄ CÓMO JUGAR ▄▄▄▄▄", curses.color_pair(1) | curses.A_BOLD)
+            if 1 < max_y and 2 < max_x:
+                stdscr.addstr(1, 2, "▄▄▄▄▄ CÓMO JUGAR ▄▄▄▄▄", curses.color_pair(1) | curses.A_BOLD)
             
             for i, line in enumerate(pages[current_page]):
                 if 3 + i < max_y:
                     try:
-                        stdscr.addstr(3 + i, 2, line, curses.color_pair(1))
+                        if len(line) <= max_x:
+                            stdscr.addstr(3 + i, 2, line, curses.color_pair(1))
+                        else:
+                            stdscr.addstr(3 + i, 2, line[:max_x-3] + "...", curses.color_pair(1))
                     except curses.error:
                         pass
                         
-            if max_y > 20:
+            if max_y > 20 and 2 < max_x:
                 page_info = f"Página {current_page + 1}/{len(pages)}"
                 try:
                     stdscr.addstr(max_y - 2, 2, page_info, curses.color_pair(1))
@@ -1397,6 +1642,278 @@ def show_tutorial(stdscr):
         elif key == 27:
             break
 
+# NUEVO: Menús mejorados para múltiples guardados
+def new_game_menu(stdscr):
+    """Menú para nueva partida con selección de slot"""
+    curses.curs_set(0)
+    options = []
+    
+    # Obtener slots disponibles
+    empty_slots = save_manager.get_empty_slots()
+    existing_saves = save_manager.list_saves()
+    
+    # Crear opciones
+    for slot in range(1, MAX_SAVE_SLOTS + 1):
+        if slot in empty_slots:
+            options.append(f"Slot {slot}: [VACÍO]")
+        else:
+            # Buscar info del slot
+            save_info = next((s for s in existing_saves if s['slot_number'] == slot), None)
+            if save_info:
+                options.append(f"Slot {slot}: Nvl {save_info['level']} - {save_info['score']} pts")
+            else:
+                options.append(f"Slot {slot}: [ERROR]")
+    
+    options.append("Volver al menú principal")
+    
+    selected = 0
+    while True:
+        stdscr.erase()
+        max_y, max_x = stdscr.getmaxyx()
+        
+        try:
+            if 1 < max_y and 2 < max_x:
+                stdscr.addstr(1, 2, "▄▄▄▄▄ NUEVA PARTIDA ▄▄▄▄▄", curses.color_pair(1) | curses.A_BOLD)
+            if 3 < max_y and 2 < max_x:
+                stdscr.addstr(3, 2, "Elige un slot de guardado:", curses.color_pair(1))
+            
+            for i, opt in enumerate(options):
+                if 5 + i < max_y:
+                    prefix = "> " if i == selected else "  "
+                    try:
+                        stdscr.addstr(5 + i, 4, prefix + opt, curses.color_pair(1))
+                    except curses.error:
+                        pass
+            
+            if max_y > 5 + len(options) + 2 and 2 < max_x:
+                stdscr.addstr(5 + len(options) + 2, 2, "Enter: Seleccionar  ESC: Volver", curses.color_pair(1))
+                
+        except curses.error:
+            pass
+            
+        stdscr.refresh()
+        key = stdscr.getch()
+        
+        if key in (curses.KEY_UP, ord('w'), ord('W'), ord('k'), ord('K')):
+            selected = (selected - 1) % len(options)
+        elif key in (curses.KEY_DOWN, ord('s'), ord('S'), ord('j'), ord('J')):
+            selected = (selected + 1) % len(options)
+        elif key in (ord('\n'), ord('\r'), 10, 13):
+            if selected == len(options) - 1:  # "Volver"
+                return None, None
+            else:
+                slot_number = selected + 1
+                # Si el slot está ocupado, confirmar sobrescritura
+                if slot_number not in empty_slots:
+                    if not confirm_overwrite(stdscr, slot_number):
+                        continue
+                return slot_number, None
+        elif key == 27:
+            return None, None
+    
+    return None, None
+
+def confirm_overwrite(stdscr, slot_number):
+    """Confirmar sobrescritura de partida existente"""
+    curses.curs_set(0)
+    options = ["Sí, sobrescribir", "No, cancelar"]
+    selected = 1  # Por defecto seleccionar "No"
+    
+    while True:
+        stdscr.erase()
+        max_y, max_x = stdscr.getmaxyx()
+        
+        try:
+            if 2 < max_y and 2 < max_x:
+                stdscr.addstr(2, 2, "¡ADVERTENCIA!", curses.color_pair(1) | curses.A_BOLD)
+            if 4 < max_y and 2 < max_x:
+                stdscr.addstr(4, 2, f"El slot {slot_number} ya tiene una partida guardada.", curses.color_pair(1))
+            if 5 < max_y and 2 < max_x:
+                stdscr.addstr(5, 2, "¿Quieres sobrescribirla?", curses.color_pair(1))
+            
+            for i, opt in enumerate(options):
+                if 7 + i < max_y:
+                    prefix = "> " if i == selected else "  "
+                    try:
+                        stdscr.addstr(7 + i, 4, prefix + opt, curses.color_pair(1))
+                    except curses.error:
+                        pass
+                        
+        except curses.error:
+            pass
+            
+        stdscr.refresh()
+        key = stdscr.getch()
+        
+        if key in (curses.KEY_UP, ord('w'), ord('W'), ord('k'), ord('K')):
+            selected = (selected - 1) % len(options)
+        elif key in (curses.KEY_DOWN, ord('s'), ord('S'), ord('j'), ord('J')):
+            selected = (selected + 1) % len(options)
+        elif key in (ord('\n'), ord('\r'), 10, 13):
+            return selected == 0
+        elif key == 27:
+            return False
+    
+    return False
+
+def load_game_menu(stdscr):
+    """Menú para cargar partida existente"""
+    curses.curs_set(0)
+    
+    saves = save_manager.list_saves()
+    if not saves:
+        stdscr.erase()
+        try:
+            stdscr.addstr(2, 2, "No hay partidas guardadas.", curses.color_pair(1))
+            stdscr.addstr(4, 2, "Presiona cualquier tecla para continuar", curses.color_pair(1))
+        except curses.error:
+            pass
+        stdscr.refresh()
+        stdscr.getch()
+        return None
+    
+    options = []
+    for save in saves:
+        play_time = save['play_time']
+        minutes = play_time // 60
+        seconds = play_time % 60
+        options.append(f"Slot {save['slot_number']}: Nvl {save['level']} - {save['score']} pts - {minutes:02d}:{seconds:02d}")
+    
+    options.append("Cargar autoguardado")
+    options.append("Volver al menú principal")
+    
+    selected = 0
+    while True:
+        stdscr.erase()
+        max_y, max_x = stdscr.getmaxyx()
+        
+        try:
+            if 1 < max_y and 2 < max_x:
+                stdscr.addstr(1, 2, "▄▄▄▄▄ CARGAR PARTIDA ▄▄▄▄▄", curses.color_pair(1) | curses.A_BOLD)
+            if 3 < max_y and 2 < max_x:
+                stdscr.addstr(3, 2, "Elige una partida guardada:", curses.color_pair(1))
+            
+            for i, opt in enumerate(options):
+                if 5 + i < max_y:
+                    prefix = "> " if i == selected else "  "
+                    try:
+                        stdscr.addstr(5 + i, 4, prefix + opt, curses.color_pair(1))
+                    except curses.error:
+                        pass
+            
+            if max_y > 5 + len(options) + 2 and 2 < max_x:
+                stdscr.addstr(5 + len(options) + 2, 2, "Enter: Cargar  D: Eliminar  ESC: Volver", curses.color_pair(1))
+                
+        except curses.error:
+            pass
+            
+        stdscr.refresh()
+        key = stdscr.getch()
+        
+        if key in (curses.KEY_UP, ord('w'), ord('W'), ord('k'), ord('K')):
+            selected = (selected - 1) % len(options)
+        elif key in (curses.KEY_DOWN, ord('s'), ord('S'), ord('j'), ord('J')):
+            selected = (selected + 1) % len(options)
+        elif key in (ord('\n'), ord('\r'), 10, 13):
+            if selected == len(options) - 1:  # "Volver"
+                return None
+            elif selected == len(options) - 2:  # "Cargar autoguardado"
+                game_state, message = load_game("autosave")
+                if game_state:
+                    return game_state
+                else:
+                    # Mostrar error
+                    stdscr.erase()
+                    try:
+                        stdscr.addstr(2, 2, f"Error: {message}", curses.color_pair(1))
+                        stdscr.addstr(4, 2, "Presiona cualquier tecla para continuar", curses.color_pair(1))
+                    except curses.error:
+                        pass
+                    stdscr.refresh()
+                    stdscr.getch()
+                    continue
+            else:
+                slot_number = saves[selected]['slot_number']
+                game_state, message = load_game(slot_number)
+                if game_state:
+                    return game_state
+                else:
+                    # Mostrar error
+                    stdscr.erase()
+                    try:
+                        stdscr.addstr(2, 2, f"Error: {message}", curses.color_pair(1))
+                        stdscr.addstr(4, 2, "Presiona cualquier tecla para continuar", curses.color_pair(1))
+                    except curses.error:
+                        pass
+                    stdscr.refresh()
+                    stdscr.getch()
+                    continue
+        elif key in (ord('d'), ord('D')):
+            if selected < len(saves):
+                slot_number = saves[selected]['slot_number']
+                if confirm_delete(stdscr, slot_number):
+                    success, message = save_manager.delete_save(slot_number)
+                    # Actualizar lista
+                    saves = save_manager.list_saves()
+                    if not saves:
+                        return None
+                    options = []
+                    for save in saves:
+                        play_time = save['play_time']
+                        minutes = play_time // 60
+                        seconds = play_time % 60
+                        options.append(f"Slot {save['slot_number']}: Nvl {save['level']} - {save['score']} pts - {minutes:02d}:{seconds:02d}")
+                    options.append("Cargar autoguardado")
+                    options.append("Volver al menú principal")
+                    selected = min(selected, len(options) - 1)
+        elif key == 27:
+            return None
+    
+    return None
+
+def confirm_delete(stdscr, slot_number):
+    """Confirmar eliminación de partida"""
+    curses.curs_set(0)
+    options = ["Sí, eliminar", "No, cancelar"]
+    selected = 1  # Por defecto seleccionar "No"
+    
+    while True:
+        stdscr.erase()
+        max_y, max_x = stdscr.getmaxyx()
+        
+        try:
+            if 2 < max_y and 2 < max_x:
+                stdscr.addstr(2, 2, "¡CONFIRMAR ELIMINACIÓN!", curses.color_pair(1) | curses.A_BOLD | curses.A_BLINK)
+            if 4 < max_y and 2 < max_x:
+                stdscr.addstr(4, 2, f"¿Eliminar partida del slot {slot_number}?", curses.color_pair(1))
+            if 5 < max_y and 2 < max_x:
+                stdscr.addstr(5, 2, "Esta acción no se puede deshacer.", curses.color_pair(1))
+            
+            for i, opt in enumerate(options):
+                if 7 + i < max_y:
+                    prefix = "> " if i == selected else "  "
+                    try:
+                        stdscr.addstr(7 + i, 4, prefix + opt, curses.color_pair(1))
+                    except curses.error:
+                        pass
+                        
+        except curses.error:
+            pass
+            
+        stdscr.refresh()
+        key = stdscr.getch()
+        
+        if key in (curses.KEY_UP, ord('w'), ord('W'), ord('k'), ord('K')):
+            selected = (selected - 1) % len(options)
+        elif key in (curses.KEY_DOWN, ord('s'), ord('S'), ord('j'), ord('J')):
+            selected = (selected + 1) % len(options)
+        elif key in (ord('\n'), ord('\r'), 10, 13):
+            return selected == 0
+        elif key == 27:
+            return False
+    
+    return False
+
 def menu(stdscr):
     curses.curs_set(0)
     options = ["Nueva partida", "Cargar partida", "Cómo jugar", "Salir"]
@@ -1412,10 +1929,11 @@ def menu(stdscr):
             if len(title) > max_x:
                 title = title[:max_x]
             
-            stdscr.addstr(0, 0, title, curses.color_pair(1) | curses.A_BOLD)
+            if 0 < max_y:
+                stdscr.addstr(0, 0, title, curses.color_pair(1) | curses.A_BOLD)
             
-            credit = "By: Dragon56YT - v0.7-beta"
-            if 1 < max_y:
+            credit = "By: Dragon56YT - v0.8-beta"
+            if 1 < max_y and len(credit) <= max_x:
                 stdscr.addstr(1, 0, credit, curses.color_pair(1))
         except curses.error:
             pass
@@ -1429,7 +1947,7 @@ def menu(stdscr):
                     pass
         
         try:
-            if 9 < max_y:
+            if 9 < max_y and 2 < max_x:
                 stdscr.addstr(9, 2, "Use arrow keys and Enter", curses.color_pair(1))
         except curses.error:
             pass
@@ -1458,25 +1976,31 @@ def prompt_seed(stdscr):
     max_y, max_x = stdscr.getmaxyx()
     
     try:
-        stdscr.addstr(2, 2, "███████ NEW GAME ███████", curses.color_pair(1) | curses.A_BOLD)
-        stdscr.addstr(4, 2, "Enter seed (leave blank for random): ", curses.color_pair(1))
-        stdscr.addstr(6, 2, "Secret seeds: SAFE, GOD, SPEED", curses.color_pair(1))
-        stdscr.addstr(8, 2, "Press ESC to return to main menu", curses.color_pair(1))
+        if 2 < max_y and 2 < max_x:
+            stdscr.addstr(2, 2, "███████ NEW GAME ███████", curses.color_pair(1) | curses.A_BOLD)
+        if 4 < max_y and 2 < max_x:
+            stdscr.addstr(4, 2, "Enter seed (leave blank for random): ", curses.color_pair(1))
+        if 6 < max_y and 2 < max_x:
+            stdscr.addstr(6, 2, "Secret seeds: SAFE, GOD, SPEED", curses.color_pair(1))
+        if 8 < max_y and 2 < max_x:
+            stdscr.addstr(8, 2, "Press ESC to return to main menu", curses.color_pair(1))
     except curses.error:
         pass
         
     stdscr.refresh()
     
     input_x = 40
-    stdscr.move(4, input_x)
+    if 4 < max_y:
+        stdscr.move(4, min(input_x, max_x-1))
     
     try:
-        max_input_len = min(20, max_x - input_x)
+        max_input_len = min(20, max_x - input_x) if max_x > input_x else 0
         input_str = ""
         
         if max_input_len > 0:
             while True:
-                stdscr.move(4, input_x + len(input_str))
+                if 4 < max_y:
+                    stdscr.move(4, min(input_x + len(input_str), max_x-1))
                 ch = stdscr.getch()
                 
                 if ch == 27:
@@ -1488,11 +2012,13 @@ def prompt_seed(stdscr):
                 elif ch == curses.KEY_BACKSPACE or ch == 127 or ch == 8:
                     if len(input_str) > 0:
                         input_str = input_str[:-1]
-                        stdscr.addch(4, input_x + len(input_str), ' ')
-                        stdscr.move(4, input_x + len(input_str))
+                        if 4 < max_y and input_x + len(input_str) < max_x:
+                            stdscr.addch(4, input_x + len(input_str), ' ')
+                            stdscr.move(4, min(input_x + len(input_str), max_x-1))
                 elif len(input_str) < max_input_len and 32 <= ch <= 126:
                     input_str += chr(ch)
-                    stdscr.addch(4, input_x + len(input_str) - 1, chr(ch))
+                    if 4 < max_y and input_x + len(input_str) - 1 < max_x:
+                        stdscr.addch(4, input_x + len(input_str) - 1, chr(ch))
     except Exception:
         input_str = ""
         
@@ -1501,22 +2027,7 @@ def prompt_seed(stdscr):
     
     return input_str
 
-def prompt_confirm_load(stdscr):
-    curses.curs_set(0)
-    while True:
-        stdscr.erase()
-        try:
-            stdscr.addstr(2, 2, "███████ LOAD GAME ███████", curses.color_pair(1) | curses.A_BOLD)
-            stdscr.addstr(4, 2, "Cargar partida - presiona Enter para cargar o ESC para volver", curses.color_pair(1))
-        except curses.error:
-            pass
-        stdscr.refresh()
-        ch = stdscr.getch()
-        if ch in (10, 13):
-            return True
-        if ch == 27:
-            return False
-
+# NUEVO: Menú de pausa mejorado
 def pause_menu(stdscr, gs):
     curses.curs_set(0)
     options = ["Continuar", "Guardar partida", "Cargar partida", "Cómo jugar", "Salir al menu"]
@@ -1526,13 +2037,17 @@ def pause_menu(stdscr, gs):
         max_y, max_x = stdscr.getmaxyx()
         
         try:
-            stdscr.addstr(2, 2, "-- PAUSA --", curses.color_pair(1) | curses.A_BOLD)
+            if 2 < max_y and 2 < max_x:
+                stdscr.addstr(2, 2, "-- PAUSA --", curses.color_pair(1) | curses.A_BOLD)
             for i, o in enumerate(options):
                 if 4 + i < max_y:
                     prefix = "> " if i == sel else "  "
-                    stdscr.addstr(4 + i, 4, prefix + o, curses.color_pair(1))
+                    try:
+                        stdscr.addstr(4 + i, 4, prefix + o, curses.color_pair(1))
+                    except curses.error:
+                        pass
             
-            if 10 < max_y:
+            if 10 < max_y and 4 < max_x:
                 stdscr.addstr(10, 4, "Flechas para navegar, Enter para seleccionar", curses.color_pair(1))
         except curses.error:
             pass
@@ -1548,26 +2063,16 @@ def pause_menu(stdscr, gs):
             if choice == 'Continuar':
                 return 'continue'
             if choice == 'Guardar partida':
-                if save_game(gs):
-                    try:
-                        stdscr.addstr(12, 4, "Partida guardada!", curses.color_pair(1))
-                        stdscr.refresh()
-                        time.sleep(1)
-                    except curses.error:
-                        pass
-                return 'continue'
+                save_result = save_game_submenu(stdscr, gs)
+                if save_result == 'continue':
+                    return 'continue'
+                elif save_result == 'back':
+                    continue
             if choice == 'Cargar partida':
-                loaded = load_game()
+                loaded = load_game_menu(stdscr)
                 if loaded:
                     return ('load', loaded)
                 else:
-                    stdscr.erase()
-                    try:
-                        stdscr.addstr(4, 4, "No se encontró partida guardada.", curses.color_pair(1))
-                        stdscr.addstr(6, 4, "Presiona cualquier tecla para continuar", curses.color_pair(1))
-                    except curses.error:
-                        pass
-                    stdscr.getch()
                     continue
             if choice == 'Cómo jugar':
                 show_tutorial(stdscr)
@@ -1576,6 +2081,108 @@ def pause_menu(stdscr, gs):
                 return 'menu'
         elif ch == 27:
             return 'continue'
+
+def save_game_submenu(stdscr, gs):
+    """Submenú para guardar partida"""
+    curses.curs_set(0)
+    
+    if gs.current_save_slot:
+        options = [
+            f"Guardar en slot actual ({gs.current_save_slot})",
+            "Guardar en nuevo slot",
+            "Autoguardado rápido",
+            "Volver"
+        ]
+    else:
+        options = [
+            "Guardar en nuevo slot",
+            "Autoguardado rápido", 
+            "Volver"
+        ]
+    
+    sel = 0
+    while True:
+        stdscr.erase()
+        max_y, max_x = stdscr.getmaxyx()
+        
+        try:
+            if 2 < max_y and 2 < max_x:
+                stdscr.addstr(2, 2, "-- GUARDAR PARTIDA --", curses.color_pair(1) | curses.A_BOLD)
+            
+            for i, opt in enumerate(options):
+                if 4 + i < max_y:
+                    prefix = "> " if i == sel else "  "
+                    try:
+                        stdscr.addstr(4 + i, 4, prefix + opt, curses.color_pair(1))
+                    except curses.error:
+                        pass
+                        
+        except curses.error:
+            pass
+            
+        stdscr.refresh()
+        ch = stdscr.getch()
+        
+        if ch in (curses.KEY_UP, ord('w'), ord('W'), ord('k'), ord('K')):
+            sel = (sel - 1) % len(options)
+        elif ch in (curses.KEY_DOWN, ord('s'), ord('S'), ord('j'), ord('J')):
+            sel = (sel + 1) % len(options)
+        elif ch in (10, 13):
+            if gs.current_save_slot:
+                if sel == 0:  # Guardar en slot actual
+                    success, message = save_game(gs, gs.current_save_slot)
+                    show_message(stdscr, message, success)
+                    return 'continue'
+                elif sel == 1:  # Guardar en nuevo slot
+                    slot_number, save_name = new_game_menu(stdscr)
+                    if slot_number:
+                        success, message = save_game(gs, slot_number, save_name)
+                        show_message(stdscr, message, success)
+                        return 'continue'
+                    else:
+                        continue
+                elif sel == 2:  # Autoguardado
+                    success, message = autosave_game(gs)
+                    show_message(stdscr, message, success)
+                    return 'continue'
+                else:  # Volver
+                    return 'back'
+            else:
+                if sel == 0:  # Guardar en nuevo slot
+                    slot_number, save_name = new_game_menu(stdscr)
+                    if slot_number:
+                        success, message = save_game(gs, slot_number, save_name)
+                        show_message(stdscr, message, success)
+                        return 'continue'
+                    else:
+                        continue
+                elif sel == 1:  # Autoguardado
+                    success, message = autosave_game(gs)
+                    show_message(stdscr, message, success)
+                    return 'continue'
+                else:  # Volver
+                    return 'back'
+        elif ch == 27:
+            return 'back'
+    
+    return 'back'
+
+def show_message(stdscr, message, is_success=True):
+    """Mostrar mensaje temporal"""
+    stdscr.erase()
+    max_y, max_x = stdscr.getmaxyx()
+    
+    try:
+        color = curses.color_pair(8) if is_success else curses.color_pair(4)  # Verde o Rojo
+        if 2 < max_y and 2 < max_x:
+            stdscr.addstr(2, 2, message, color)
+        if 4 < max_y and 2 < max_x:
+            stdscr.addstr(4, 2, "Presiona cualquier tecla para continuar", curses.color_pair(1))
+    except curses.error:
+        pass
+        
+    stdscr.refresh()
+    stdscr.getch()
 
 def apply_damage_stun(gs):
     if gs:
@@ -1593,6 +2200,10 @@ def run_game(stdscr, gs):
 
     target_fps = 30
     frame_duration = 1.0 / target_fps
+
+    # NUEVO: Autoguardado al iniciar nivel
+    if gs.current_save_slot:
+        autosave_game(gs)
 
     while True:
         current_time = time.time()
@@ -1674,6 +2285,10 @@ def run_game(stdscr, gs):
         move_enemies(gs)
 
         if gs.exit and gs.player and (gs.player.x, gs.player.y) == gs.exit:
+            # NUEVO: Autoguardado al completar nivel
+            if gs.current_save_slot:
+                autosave_game(gs)
+                
             gs.player.score += 1000 * gs.level
             gs.level += 1
             if gs.level > MAX_LEVEL:
@@ -1681,6 +2296,10 @@ def run_game(stdscr, gs):
                 return
             show_level_complete(stdscr, gs)
             gs.new_level()
+            
+            # NUEVO: Autoguardado después de nuevo nivel
+            if gs.current_save_slot:
+                autosave_game(gs)
 
         if gs.player and gs.player.hp <= 0:
             show_game_over(stdscr, gs)
@@ -1716,35 +2335,23 @@ def main(stdscr):
         if choice == 'Salir':
             break
         elif choice == 'Cargar partida':
-            confirm = prompt_confirm_load(stdscr)
-            if not confirm:
-                continue
-            loaded = load_game()
-            if not loaded:
-                stdscr.erase()
-                try:
-                    stdscr.addstr(2, 2, "No se encontró partida guardada.", curses.color_pair(1))
-                    stdscr.addstr(4, 2, "Presiona cualquier tecla para continuar", curses.color_pair(1))
-                except curses.error:
-                    pass
-                stdscr.getch()
-                continue
-            else:
+            loaded = load_game_menu(stdscr)
+            if loaded:
                 gs = loaded
-                if gs.map is None or gs.player is None:
-                    gs = GameState(level=1, seed=gs.seed)
-                    gs.new_level()
                 run_game(stdscr, gs)
         elif choice == 'Cómo jugar':
             show_tutorial(stdscr)
         elif choice == 'Nueva partida':
-            seed_input = prompt_seed(stdscr)
-            if seed_input is None:
-                continue
-            seed = seed_input if seed_input != "" else None
-            gs = GameState(level=1, seed=seed)
-            gs.new_level()
-            run_game(stdscr, gs)
+            slot_number, save_name = new_game_menu(stdscr)
+            if slot_number:
+                seed_input = prompt_seed(stdscr)
+                if seed_input is None:
+                    continue
+                seed = seed_input if seed_input != "" else None
+                gs = GameState(level=1, seed=seed)
+                gs.current_save_slot = slot_number
+                gs.new_level()
+                run_game(stdscr, gs)
 
 if __name__ == '__main__':
     curses.wrapper(main)
