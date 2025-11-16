@@ -8,6 +8,58 @@ To view a copy of this license, visit https://creativecommons.org/licenses/by-nc
 
 """
 
+def check_dependencies():
+    """Verificar que todas las dependencias estén disponibles"""
+    missing_deps = []
+    
+    # Verificar curses
+    try:
+        import curses
+    except ImportError:
+        missing_deps.append("curses")
+    
+    # Verificar otros módulos estándar que deberían estar disponibles
+    required_std = ['random', 'json', 'time', 'os', 'pickle', 'base64', 'glob', 'collections', 'datetime']
+    for module in required_std:
+        try:
+            __import__(module)
+        except ImportError:
+            missing_deps.append(module)
+    
+    return missing_deps
+
+def show_install_instructions(missing_deps):
+    """Mostrar instrucciones de instalación amigables"""
+    print("=" * 70)
+    print("¡DEPENDENCIAS FALTANTES!")
+    print("=" * 70)
+    print(f"Módulos no encontrados: {', '.join(missing_deps)}")
+    print()
+    
+    if "curses" in missing_deps:
+        print("PARA INSTALAR CURSES EN WINDOWS:")
+        print("  pip install windows-curses")
+        print()
+        print("O si usas conda:")
+        print("  conda install -c conda-forge windows-curses")
+        print()
+        print("En Linux/macOS, curses suele estar incluido por defecto.")
+        print("Si no es así, instálalo con:")
+        print("  sudo apt-get install libncurses5-dev   # Debian/Ubuntu")
+        print("  brew install ncurses                   # macOS")
+    
+    print()
+    print("Una vez instaladas las dependencias, vuelve a ejecutar el juego.")
+    print("=" * 70)
+    input("Presiona Enter para salir...")
+
+# Verificar dependencias al inicio
+missing = check_dependencies()
+if missing:
+    show_install_instructions(missing)
+    exit(1)
+
+# Si todas las dependencias están disponibles, importar normalmente
 import curses
 import random
 import json
@@ -2539,4 +2591,12 @@ def main(stdscr):
                 run_game(stdscr, gs)
 
 if __name__ == '__main__':
-    curses.wrapper(main)
+    try:
+        curses.wrapper(main)
+    except KeyboardInterrupt:
+        print("\n¡Juego interrumpido! Gracias por jugar.")
+    except Exception as e:
+        print(f"\nError inesperado: {e}")
+        if DEBUG_MODE:
+            import traceback
+            traceback.print_exc()
