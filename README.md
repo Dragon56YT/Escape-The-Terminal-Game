@@ -1,7 +1,7 @@
 # Escape The Terminal
 
 ![Python](https://img.shields.io/badge/Python-3.6%2B%20(min)%20|%203.13%2B%20(recommended)-blue)
-![License](https://img.shields.io/badge/license-MIT-green)
+![License](https://img.shields.io/badge/license-CC%20BY--NC%204.0-red)
 ![Version](https://img.shields.io/badge/version-v0.8--beta-yellow)
 
 **Escape the Terminal** es un roguelike de un solo archivo para la terminal, escrito en Python.  
@@ -99,7 +99,16 @@ python escape_terminal.py
 - escape_terminal_save.json — Guardado automático
 ---
 # 📄 Licencia
-## Este proyecto es open-source bajo licencia MIT.
+
+Escape the Terminal © 2025 by Dragon56YT is licensed under Creative Commons Attribution-NonCommercial 4.0 International. To view a copy of this license, visit https://creativecommons.org/licenses/by-nc/4.0/
+
+- ✅ You may copy, modify, and distribute for **non-commercial purposes**.
+- ✅ You must **attribute the original author** (Dragon56YT) in any copies or derivatives.
+- ❌ You **cannot use this software commercially** without explicit permission.
+- 📄 Keep the LICENSE.txt file with the project when redistributing or creating derivatives.
+
+See the full license: https://creativecommons.org/licenses/by-nc/4.0/
+
 
 # ✨ Créditos
 ## Desarrollo original: Dragon56YT
