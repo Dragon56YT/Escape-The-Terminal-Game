@@ -1,7 +1,7 @@
 """
 Escape the Terminal - single-file Python roguelike for the terminal
 By: Dragon56YT
-Version: v0.8-beta
+Version: v0.9-beta
 
 Escape the Terminal © 2025 by Dragon56YT is licensed under Creative Commons Attribution-NonCommercial 4.0 International.
 To view a copy of this license, visit https://creativecommons.org/licenses/by-nc/4.0/
@@ -19,11 +19,14 @@ import glob
 from collections import deque
 from datetime import datetime
 
-# NUEVO: Sistema de guardados mejorado
+# DEVELOPER: Debug mode
+DEBUG_MODE = False
+
+# Sistema de guardados mejorado
 SAVE_DIR = "escape_saves"
 AUTOSAVE_FILE = "autosave.json"
 MAX_SAVE_SLOTS = 5
-SAVE_VERSION = "0.8"
+SAVE_VERSION = "0.9"
 
 # Lore actualizado con más líneas
 LORE_LINES = [
@@ -105,6 +108,16 @@ MIN_GAME_WIDTH = 40
 MAX_ENEMIES = 12
 CACHE_DURATION = 0.1
 
+# NUEVO: Sistema de logging para debug
+def debug_log(message, level='INFO'):
+    if DEBUG_MODE:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        try:
+            with open('debug_log.txt', 'a') as f:
+                f.write(f"[{timestamp}] {level}: {message}\n")
+        except Exception:
+            pass
+
 def to_xy(pos):
     return int(pos.real), int(pos.imag)
 
@@ -143,6 +156,40 @@ def bresenham_line(x0, y0, x1, y1):
     points.append((x, y))
     return points
 
+# NUEVO: Sistema de animaciones
+class Animation:
+    def __init__(self, x, y, anim_type, duration=0.4):
+        self.x = x
+        self.y = y
+        self.type = anim_type  # 'hit', 'death', 'heal', 'powerup'
+        self.start_time = time.time()
+        self.duration = duration
+        self.frames = []
+        self.setup_frames()
+        debug_log(f"Animation created: {anim_type} at ({x}, {y})")
+    
+    def setup_frames(self):
+        if self.type == 'hit':
+            self.frames = ['✸', '✹', '*']  # Animación de impacto
+        elif self.type == 'death':
+            self.frames = ['✹', '✸', '*', '·', ' ']  # Animación de muerte
+        elif self.type == 'heal':
+            self.frames = ['+', '♡', '♥']  # Animación de curación
+        elif self.type == 'powerup':
+            self.frames = ['◆', '◇', '◈']  # Animación de power-up
+    
+    def get_current_frame(self):
+        elapsed = time.time() - self.start_time
+        progress = min(elapsed / self.duration, 1.0)
+        frame_index = min(int(progress * len(self.frames)), len(self.frames) - 1)
+        return self.frames[frame_index]
+    
+    def is_finished(self):
+        finished = time.time() - self.start_time >= self.duration
+        if finished:
+            debug_log(f"Animation finished: {self.type} at ({self.x}, {self.y})")
+        return finished
+
 class GameMap:
     def __init__(self, width, height, walls=None):
         self.width = width
@@ -166,8 +213,7 @@ class GameMap:
     def to_grid(self):
         current_time = time.time()
         if self._grid_cache is None or current_time - self._cache_time > CACHE_DURATION:
-            # FIX: Limpiar cache anterior para evitar memory leaks
-            self._grid_cache = None
+            # PARCHÉ: Eliminado del innecesario que causaba memory leaks
             self._grid_cache = [[FLOOR for _ in range(self.width)] for __ in range(self.height)]
             for (wx, wy) in self.walls:
                 if 0 <= wy < self.height and 0 <= wx < self.width:
@@ -301,10 +347,12 @@ class Player:
         if self.has_shield:
             self.has_shield = False
             self._last_damage_time = time.time()
+            debug_log("Player shield blocked damage")
             return False
         elif not self.has_invincibility():
             self.hp -= amount
             self._last_damage_time = time.time()
+            debug_log(f"Player took damage, HP: {self.hp}")
             return True
         return False
 
@@ -331,6 +379,7 @@ class Player:
     def add_kill(self, enemy_type):
         if enemy_type in self.enemies_killed:
             self.enemies_killed[enemy_type] += 1
+            debug_log(f"Player killed {enemy_type}, total: {self.enemies_killed[enemy_type]}")
 
     def serialize(self):
         return {
@@ -401,14 +450,16 @@ class Enemy:
             
         self.last_move_time = 0
         self.move_cooldown = 0.5 / (self.speed * 0.5)
-        # FIX: Identificador único para colisiones
-        self._unique_id = f"{id(self)}_{time.time()}"
+        # REEMPLAZO: Usar timestamp y random en lugar de uuid
+        self.unique_id = f"{x}_{y}_{enemy_type}_{time.time()}_{random.random()}"
+        debug_log(f"Enemy created: {enemy_type} at ({x}, {y}) ID: {self.unique_id}")
 
     def pos(self):
         return (self.x, self.y)
 
     def take_damage(self, damage=1):
         self.health -= damage
+        debug_log(f"Enemy {self.type} took damage, health: {self.health}")
         return self.health <= 0
 
     def can_shoot(self):
@@ -426,7 +477,7 @@ class Enemy:
         self.last_move_time = time.time()
 
     def serialize(self):
-        data = {'x': self.x, 'y': self.y, 'type': self.type}
+        data = {'x': self.x, 'y': self.y, 'type': self.type, 'unique_id': self.unique_id}
         if self.type == "sniper":
             data['last_shot_time'] = self.last_shot_time
         return data
@@ -436,12 +487,19 @@ class Enemy:
         if not d:
             return None
         enemy = Enemy(d['x'], d['y'], enemy_type=d.get('type', 'normal'))
+        # REEMPLAZO: Generar nuevo ID si no existe en los datos
+        enemy.unique_id = d.get('unique_id', f"{d['x']}_{d['y']}_{d.get('type', 'normal')}_{time.time()}_{random.random()}")
         if enemy.type == "sniper":
             enemy.last_shot_time = d.get('last_shot_time', 0)
         return enemy
 
 class Bullet:
+    # FIX: Contador estático para IDs únicos
+    _next_id = 0
+    
     def __init__(self, x, y, dx, dy, weapon_type='pistol', is_enemy_bullet=False, pierce_walls=False):
+        self.id = Bullet._next_id
+        Bullet._next_id += 1
         self.x = int(x)
         self.y = int(y)
         self.dx = int(dx)
@@ -451,10 +509,11 @@ class Bullet:
         self.pierce_walls = pierce_walls
         self.char = '*' if not is_enemy_bullet else '!'
         self.is_enemy_bullet = is_enemy_bullet
-        # FIX: Usar tuplas de posición en lugar de id() para evitar colisiones
-        self.hit_enemies = set()
+        # PARCHÉ: Usar unique_id en lugar de posiciones para evitar colisiones
+        self.hit_enemy_ids = set()
         self.created_time = time.time()
         self.max_lifetime = 4.0
+        debug_log(f"Bullet created: ID {self.id} at ({x}, {y})")
 
     def pos(self):
         return (self.x, self.y)
@@ -464,7 +523,10 @@ class Bullet:
         self.y += self.dy
 
     def is_expired(self):
-        return time.time() - self.created_time > self.max_lifetime
+        expired = time.time() - self.created_time > self.max_lifetime
+        if expired:
+            debug_log(f"Bullet {self.id} expired")
+        return expired
 
     def serialize(self):
         return {
@@ -473,7 +535,8 @@ class Bullet:
             'weapon_type': self.weapon_type,
             'is_enemy_bullet': self.is_enemy_bullet,
             'pierce_walls': self.pierce_walls,
-            'created_time': self.created_time
+            'created_time': self.created_time,
+            'id': self.id
         }
 
     @staticmethod
@@ -485,21 +548,25 @@ class Bullet:
                        d.get('is_enemy_bullet', False),
                        d.get('pierce_walls', False))
         bullet.created_time = d.get('created_time', time.time())
+        bullet.id = d.get('id', Bullet._next_id)
+        Bullet._next_id = max(Bullet._next_id, bullet.id + 1)
         return bullet
 
 def _state_to_list(obj):
     try:
         return base64.b64encode(pickle.dumps(obj)).decode('ascii')
-    except Exception:
+    except Exception as e:
+        debug_log(f"Error in _state_to_list: {e}", "ERROR")
         return None
 
 def _list_to_state(obj):
     try:
         return pickle.loads(base64.b64decode(obj.encode('ascii')))
-    except Exception:
+    except Exception as e:
+        debug_log(f"Error in _list_to_state: {e}", "ERROR")
         return None
 
-# NUEVO: Sistema de gestión de guardados
+# Sistema de gestión de guardados
 class SaveManager:
     def __init__(self):
         self.save_dir = SAVE_DIR
@@ -539,7 +606,8 @@ class SaveManager:
                     'play_time': metadata.get('play_time', 0),
                     'date_modified': metadata.get('date_modified', 'Unknown')
                 })
-            except Exception:
+            except Exception as e:
+                debug_log(f"Error loading save {slot_file}: {e}", "ERROR")
                 continue
         
         # Ordenar por slot number
@@ -592,15 +660,17 @@ class SaveManager:
                 os.remove(save_path)
             os.rename(temp_path, save_path)
             
+            debug_log(f"Game saved to {save_path}")
             return True, f"Game saved to slot {slot_number}"
             
         except Exception as e:
             # Limpiar archivo temporal en caso de error
             try:
-                if os.path.exists(temp_path):
+                if 'temp_path' in locals() and os.path.exists(temp_path):
                     os.remove(temp_path)
             except:
                 pass
+            debug_log(f"Save failed: {str(e)}", "ERROR")
             return False, f"Save failed: {str(e)}"
     
     def load_game(self, slot_number=None, filename=None):
@@ -624,17 +694,22 @@ class SaveManager:
             if metadata.get('version') != SAVE_VERSION:
                 return None, f"Save version mismatch. Expected {SAVE_VERSION}, got {metadata.get('version')}"
             
-            # Cargar estado del juego
+            # Cargar estado del juego usando deserialización robusta
             game_data = save_data.get('game_data', {})
-            game_state = GameState.deserialize(game_data)
+            game_state = safe_deserialize(game_data)
+            
+            if not game_state:
+                return None, "Failed to load game data"
             
             # Aplicar efectos de semilla si existen
             if hasattr(game_state, 'seed'):
                 game_state.apply_seed_effects_on_start()
             
+            debug_log(f"Game loaded from {save_path}")
             return game_state, "Game loaded successfully"
             
         except Exception as e:
+            debug_log(f"Load failed: {str(e)}", "ERROR")
             return None, f"Load failed: {str(e)}"
     
     def delete_save(self, slot_number):
@@ -643,11 +718,73 @@ class SaveManager:
             save_path = self.get_save_path(slot_number)
             if os.path.exists(save_path):
                 os.remove(save_path)
+                debug_log(f"Save deleted: {save_path}")
                 return True, "Save deleted"
             else:
                 return False, "Save file not found"
         except Exception as e:
+            debug_log(f"Delete failed: {str(e)}", "ERROR")
             return False, f"Delete failed: {str(e)}"
+
+# PARCHÉ: Función de deserialización robusta
+def safe_deserialize(data):
+    """Deserialización segura con validación completa"""
+    if not data or not isinstance(data, dict):
+        debug_log("Invalid save data structure", "ERROR")
+        return None
+        
+    required_fields = ['level', 'seed', 'player']
+    for field in required_fields:
+        if field not in data:
+            debug_log(f"Missing required field: {field}", "ERROR")
+            return None
+            
+    try:
+        gs = GameState(level=data.get('level', 1), seed=data.get('seed'))
+        
+        if data.get('map'):
+            gs.map = GameMap.deserialize(data['map'])
+        if data.get('player'):
+            gs.player = Player.deserialize(data['player'])
+        
+        gs.enemies = []
+        for ed in data.get('enemies', []):
+            enemy = Enemy.deserialize(ed)
+            if enemy:
+                gs.enemies.append(enemy)
+                
+        gs.bullets = []
+        for bd in data.get('bullets', []):
+            bullet = Bullet.deserialize(bd)
+            if bullet:
+                gs.bullets.append(bullet)
+                
+        gs.ammos = [tuple(a) for a in data.get('ammos', []) if isinstance(a, list) and len(a) == 2]
+        gs.powerups = [tuple(p) for p in data.get('powerups', []) if isinstance(p, list) and len(p) == 3]
+        
+        if data.get('exit') and isinstance(data['exit'], list) and len(data['exit']) == 2:
+            gs.exit = tuple(data['exit'])
+            
+        gs.lore_message = data.get('lore_message')
+        gs.special_effects = set(data.get('special_effects', []))
+        gs.start_time = data.get('start_time', time.time())
+        gs.stunned_until = data.get('stunned_until', 0.0)
+        gs.enemies_killed_this_level = data.get('enemies_killed_this_level', 0)
+        gs._last_enemy_move_time = data.get('_last_enemy_move_time', time.time())
+        gs.current_save_slot = data.get('current_save_slot')
+        
+        try:
+            if data.get('rng_state'):
+                gs.rng.setstate(_list_to_state(data['rng_state']))
+        except Exception as e:
+            debug_log(f"Error restoring RNG state: {e}", "ERROR")
+            gs.rng = random.Random(gs.seed)
+            
+        return gs
+        
+    except Exception as e:
+        debug_log(f"Deserialization failed: {e}", "ERROR")
+        return None
 
 class GameState:
     def __init__(self, level=1, seed=None):
@@ -672,7 +809,15 @@ class GameState:
         self._enemy_move_interval = 0.35
         self._last_optimization_time = 0
         self.game_version = SAVE_VERSION
-        self.current_save_slot = None  # NUEVO: Slot actual de guardado
+        self.current_save_slot = None
+        # NUEVO: Lista de animaciones
+        self.animations = []
+        
+        debug_log(f"GameState created: level {level}, seed {seed}")
+
+    def add_animation(self, x, y, anim_type):
+        """Añadir una nueva animación"""
+        self.animations.append(Animation(x, y, anim_type))
 
     def calculate_enemy_distribution(self):
         if self.level == 1:
@@ -697,6 +842,7 @@ class GameState:
             self.map, start, exitpos = ensure_path(w, h, wall_chance, self.rng)
         except Exception as e:
             # Fallback absoluto si ensure_path falla
+            debug_log(f"ensure_path failed: {e}, using fallback", "ERROR")
             self.map = GameMap(w, h, walls=set())
             start, exitpos = (1, 1), (w-2, h-2)
         
@@ -785,6 +931,10 @@ class GameState:
         self.enemies_killed_this_level = 0
         self._last_enemy_move_time = time.time()
         self._last_optimization_time = time.time()
+        # NUEVO: Limpiar animaciones al cambiar de nivel
+        self.animations = []
+        
+        debug_log(f"New level created: {self.level}, enemies: {len(self.enemies)}")
 
     def apply_seed_effects_on_start(self):
         s = (self.seed or '').upper()
@@ -818,8 +968,13 @@ class GameState:
             self.bullets.sort(key=lambda b: b.created_time)
             self.bullets = self.bullets[-MAX_ACTIVE_BULLETS:]
             
+        # FIX: Limpiar animaciones terminadas
+        self.animations = [anim for anim in self.animations if not anim.is_finished()]
+            
         if self.map and hasattr(self.map, '_grid_cache'):
             self.map._grid_cache = None
+            
+        debug_log(f"Optimized: {len(self.bullets)} bullets, {len(self.animations)} animations")
 
     def serialize(self):
         data = {
@@ -839,72 +994,22 @@ class GameState:
             'stunned_until': self.stunned_until,
             'enemies_killed_this_level': self.enemies_killed_this_level,
             '_last_enemy_move_time': self._last_enemy_move_time,
-            'current_save_slot': self.current_save_slot  # NUEVO
+            'current_save_slot': self.current_save_slot
         }
         try:
             rng_state = self.rng.getstate()
             data['rng_state'] = _state_to_list(rng_state)
-        except Exception:
+        except Exception as e:
+            debug_log(f"Error serializing RNG state: {e}", "ERROR")
             data['rng_state'] = None
         return data
 
     @staticmethod
     def deserialize(d):
-        if not isinstance(d, dict):
-            raise ValueError('Invalid save data')
-            
-        version = d.get('version', '0.7')
-        
-        gs = GameState(level=d.get('level', 1), seed=d.get('seed'))
-        
-        # FIX: Manejo de errores mejorado para evitar estados inconsistentes
-        try:
-            if d.get('map'):
-                gs.map = GameMap.deserialize(d['map'])
-            if d.get('player'):
-                gs.player = Player.deserialize(d['player'])
-            
-            gs.enemies = []
-            for ed in d.get('enemies', []):
-                enemy = Enemy.deserialize(ed)
-                if enemy:
-                    gs.enemies.append(enemy)
-                    
-            gs.bullets = []
-            for bd in d.get('bullets', []):
-                bullet = Bullet.deserialize(bd)
-                if bullet:
-                    gs.bullets.append(bullet)
-                    
-            gs.ammos = [tuple(a) for a in d.get('ammos', []) if isinstance(a, list) and len(a) == 2]
-            gs.powerups = [tuple(p) for p in d.get('powerups', []) if isinstance(p, list) and len(p) == 3]
-            
-            if d.get('exit') and isinstance(d['exit'], list) and len(d['exit']) == 2:
-                gs.exit = tuple(d['exit'])
-                
-            gs.lore_message = d.get('lore_message')
-            gs.special_effects = set(d.get('special_effects', []))
-            gs.start_time = d.get('start_time', time.time())
-            gs.stunned_until = d.get('stunned_until', 0.0)
-            gs.enemies_killed_this_level = d.get('enemies_killed_this_level', 0)
-            gs._last_enemy_move_time = d.get('_last_enemy_move_time', time.time())
-            gs.current_save_slot = d.get('current_save_slot')  # NUEVO
-            
-            try:
-                if d.get('rng_state'):
-                    gs.rng.setstate(_list_to_state(d['rng_state']))
-            except Exception:
-                gs.rng = random.Random(gs.seed)
-                
-        except Exception as e:
-            print(f"Error loading save data: {e}")
-            # FIX: Si falla la carga, crear un nuevo nivel en lugar de continuar inconsistente
-            if not gs.map or not gs.player:
-                gs.new_level()
-                
-        return gs
+        """Método legacy - usar safe_deserialize en su lugar"""
+        return safe_deserialize(d)
 
-# NUEVO: Funciones de guardado/load mejoradas
+# Funciones de guardado/load mejoradas
 save_manager = SaveManager()
 
 def save_game(gs, slot_number=None, save_name=None, is_autosave=False):
@@ -934,6 +1039,7 @@ def autosave_game(gs):
         return save_game(gs, is_autosave=True)
     return False, "Cannot autosave"
 
+# NUEVO: Sistema de sonidos mejorado
 def play_sound(sound_type):
     try:
         if sound_type == 'shoot':
@@ -952,8 +1058,19 @@ def play_sound(sound_type):
                     print('\a', end='', flush=True)
                     time.sleep(0.1)
                 time.sleep(0.2)
-    except Exception:
-        pass
+        elif sound_type == 'enemy_hit':  # NUEVO
+            print('\a', end='', flush=True)
+            time.sleep(0.05)
+        elif sound_type == 'enemy_death':  # NUEVO
+            for i in range(3):
+                print('\a', end='', flush=True)
+                time.sleep(0.1)
+        elif sound_type == 'powerup_get':  # NUEVO
+            for i in range(2):
+                print('\a', end='', flush=True)
+                time.sleep(0.05)
+    except Exception as e:
+        debug_log(f"Sound error: {e}", "ERROR")
 
 def move_player(gs, dx, dy):
     if not gs or not gs.player or not gs.map:
@@ -976,7 +1093,8 @@ def move_player(gs, dx, dy):
     if player_pos in gs.ammos:
         gs.ammos = [pos for pos in gs.ammos if pos != player_pos]
         gs.player.ammo += 3
-        play_sound('powerup')
+        play_sound('powerup_get')
+        gs.add_animation(nx, ny, 'powerup')  # NUEVO: Animación al recoger munición
     
     # Collect powerups
     for i, (px, py, ptype) in enumerate(gs.powerups[:]):
@@ -984,15 +1102,20 @@ def move_player(gs, dx, dy):
             gs.powerups.pop(i)
             if ptype == "health":
                 gs.player.hp = min(gs.player.max_hp, gs.player.hp + 1)
+                gs.add_animation(nx, ny, 'heal')  # NUEVO: Animación de curación
             elif ptype == "ultrafire":
                 gs.player.ultrafire_until = time.time() + ULTRAFIRE_DURATION
+                gs.add_animation(nx, ny, 'powerup')
             elif ptype == "shield":
                 gs.player.has_shield = True
+                gs.add_animation(nx, ny, 'powerup')
             elif ptype == "invincibility":
                 gs.player.invincible_until = time.time() + INVINCIBILITY_DURATION
+                gs.add_animation(nx, ny, 'powerup')
             elif ptype == "speed":
                 gs.player.speed_until = time.time() + SPEED_DURATION
-            play_sound('powerup')
+                gs.add_animation(nx, ny, 'powerup')
+            play_sound('powerup_get')
             break
 
 def fire_bullet(gs, dx, dy):
@@ -1051,17 +1174,24 @@ def step_bullets(gs):
         
         if not b.is_enemy_bullet:
             for e in gs.enemies[:]:
-                # FIX: Usar posición en lugar de id() para evitar colisiones
-                if bullet_pos == (e.x, e.y) and bullet_pos not in b.hit_enemies:
+                # PARCHÉ: Usar unique_id en lugar de id() para evitar colisiones
+                if bullet_pos == (e.x, e.y) and e.unique_id not in b.hit_enemy_ids:
+                    # NUEVO: Añadir animación de impacto
+                    gs.add_animation(e.x, e.y, 'hit')
+                    play_sound('enemy_hit')
+                    
                     if e.take_damage(b.damage):
+                        # NUEVO: Añadir animación de muerte
+                        gs.add_animation(e.x, e.y, 'death')
+                        play_sound('enemy_death')
+                        
                         if gs.player:
                             gs.player.score += e.score_value
                             gs.player.add_kill(e.type)
                             gs.enemies_killed_this_level += 1
                         gs.enemies.remove(e)
-                    b.hit_enemies.add(bullet_pos)
+                    b.hit_enemy_ids.add(e.unique_id)
                     hit_something = True
-                    play_sound('hit')
                     if not b.pierce_walls:
                         break
         else:
@@ -1102,7 +1232,10 @@ def try_random_enemy_move(e, gs, occupied):
         nx, ny = e.x + dx, e.y + dy
         if can_enemy_move_to(gs, nx, ny, occupied):
             if (nx, ny) != (e.x, e.y):
-                occupied.discard((e.x, e.y))
+                # PARCHÉ: Manejo seguro del occupied set
+                current_pos = (e.x, e.y)
+                if current_pos in occupied:
+                    occupied.discard(current_pos)
                 e.x, e.y = nx, ny
                 occupied.add((e.x, e.y))
                 e.update_move_time()
@@ -1175,9 +1308,10 @@ def move_enemies(gs):
             for dxm, dym in choices:
                 nx, ny = e.x + dxm, e.y + dym
                 if can_enemy_move_to(gs, nx, ny, occupied):
-                    # FIX: Manejo seguro del occupied set
+                    # PARCHÉ: Manejo seguro del occupied set
                     old_pos = (e.x, e.y)
-                    occupied.discard(old_pos)
+                    if old_pos in occupied:
+                        occupied.discard(old_pos)
                     e.x, e.y = nx, ny
                     occupied.add((e.x, e.y))
                     moved = True
@@ -1191,7 +1325,8 @@ def move_enemies(gs):
                     nx, ny = e.x + dxm, e.y + dym
                     if can_enemy_move_to(gs, nx, ny, occupied):
                         old_pos = (e.x, e.y)
-                        occupied.discard(old_pos)
+                        if old_pos in occupied:
+                            occupied.discard(old_pos)
                         e.x, e.y = nx, ny
                         occupied.add((e.x, e.y))
                         moved = True
@@ -1204,6 +1339,32 @@ def move_enemies(gs):
             if gs.player.take_damage():
                 apply_damage_stun(gs)
                 play_sound('hit')
+
+# NUEVO: Función para dibujar animaciones
+def draw_animations(stdscr, gs, offset_x, offset_y, hud_height, visible_area):
+    """Dibujar todas las animaciones activas"""
+    for anim in gs.animations[:]:
+        if (anim.x, anim.y) in visible_area:
+            try:
+                screen_x = anim.x - offset_x
+                screen_y = hud_height + (anim.y - offset_y)
+                
+                frame = anim.get_current_frame()
+                if frame != ' ':  # No dibujar frames vacíos
+                    color = curses.color_pair(5)  # Amarillo para hit
+                    if anim.type == 'death':
+                        color = curses.color_pair(4)  # Rojo para muerte
+                    elif anim.type == 'heal':
+                        color = curses.color_pair(8)  # Verde para curación
+                    elif anim.type == 'powerup':
+                        color = curses.color_pair(9)  # Cyan para power-up
+                    
+                    stdscr.addch(screen_y, screen_x, frame, color | curses.A_BOLD)
+            
+            except curses.error:
+                pass
+        
+        # Eliminar animaciones terminadas (se hace en optimize_game_state)
 
 def draw_game(stdscr, gs):
     if not stdscr or not gs:
@@ -1329,6 +1490,9 @@ def draw_game(stdscr, gs):
                     stdscr.addch(screen_y, screen_x, b.char, curses.color_pair(color) | curses.A_BOLD)
             except curses.error:
                 pass
+    
+    # NUEVO: Dibujar animaciones
+    draw_animations(stdscr, gs, offset_x, offset_y, hud_height, visible_area)
                 
     show_player = True
     if time.time() < gs.stunned_until:
@@ -1364,7 +1528,7 @@ def draw_game(stdscr, gs):
     seconds = play_time % 60
     
     try:
-        title = f"ESCAPE v0.8 - L{gs.level}"
+        title = f"ESCAPE v0.9 - L{gs.level}"
         if 'SAFE' in gs.special_effects:
             title += " [SAFE]"
         elif 'GOD' in gs.special_effects:
@@ -1479,10 +1643,15 @@ def show_victory_screen(stdscr, gs):
         if 13 < max_y and 4 < max_x:
             stdscr.addstr(13, 4, f"Snipers: {gs.player.enemies_killed['sniper']}", curses.color_pair(1))
         if 15 < max_y and 2 < max_x:
-            stdscr.addstr(15, 2, "Press any key to return to menu", curses.color_pair(1))
+            stdscr.addstr(15, 2, "Press ENTER to return to menu", curses.color_pair(1))
     except curses.error:
         pass
-    stdscr.getch()
+    
+    # ESPERAR POR ENTER
+    while True:
+        key = stdscr.getch()
+        if key in (10, 13):  # Enter key
+            break
 
 def show_game_over(stdscr, gs):
     if not stdscr:
@@ -1515,10 +1684,15 @@ def show_game_over(stdscr, gs):
         if 11 < max_y and 4 < max_x:
             stdscr.addstr(11, 4, f"Snipers: {gs.player.enemies_killed['sniper']}", curses.color_pair(1))
         if 13 < max_y and 2 < max_x:
-            stdscr.addstr(13, 2, "Press any key to return to menu", curses.color_pair(1))
+            stdscr.addstr(13, 2, "Press ENTER to return to menu", curses.color_pair(1))
     except curses.error:
         pass
-    stdscr.getch()
+    
+    # ESPERAR POR ENTER
+    while True:
+        key = stdscr.getch()
+        if key in (10, 13):  # Enter key
+            break
 
 def show_level_complete(stdscr, gs):
     if not stdscr:
@@ -1539,10 +1713,15 @@ def show_level_complete(stdscr, gs):
         if gs.level % 2 == 0 and gs.player.max_hp < 5 and 7 < max_y and 2 < max_x:
             stdscr.addstr(7, 2, "MAX HEALTH INCREASED!", curses.color_pair(8) | curses.A_BOLD)
         if 9 < max_y and 2 < max_x:
-            stdscr.addstr(9, 2, "Press any key to continue to next level", curses.color_pair(1))
+            stdscr.addstr(9, 2, "Press ENTER to continue to next level", curses.color_pair(1))
     except curses.error:
         pass
-    stdscr.getch()
+    
+    # ESPERAR POR ENTER
+    while True:
+        key = stdscr.getch()
+        if key in (10, 13):  # Enter key
+            break
     play_sound('level_up')
 
 def show_tutorial(stdscr):
@@ -1646,7 +1825,7 @@ def show_tutorial(stdscr):
         elif key == 27:
             break
 
-# NUEVO: Menús mejorados para múltiples guardados
+# Menús mejorados para múltiples guardados
 def new_game_menu(stdscr):
     """Menú para nueva partida con selección de slot"""
     curses.curs_set(0)
@@ -1936,7 +2115,7 @@ def menu(stdscr):
             if 0 < max_y:
                 stdscr.addstr(0, 0, title, curses.color_pair(1) | curses.A_BOLD)
             
-            credit = "By: Dragon56YT - v0.8-beta"
+            credit = "By: Dragon56YT - v0.9-beta"
             if 1 < max_y and len(credit) <= max_x:
                 stdscr.addstr(1, 0, credit, curses.color_pair(1))
         except curses.error:
@@ -2031,7 +2210,7 @@ def prompt_seed(stdscr):
     
     return input_str
 
-# NUEVO: Menú de pausa mejorado
+# Menú de pausa mejorado
 def pause_menu(stdscr, gs):
     curses.curs_set(0)
     options = ["Continuar", "Guardar partida", "Cargar partida", "Cómo jugar", "Salir al menu"]
@@ -2205,7 +2384,7 @@ def run_game(stdscr, gs):
     target_fps = 30
     frame_duration = 1.0 / target_fps
 
-    # NUEVO: Autoguardado al iniciar nivel
+    # Autoguardado al iniciar nivel
     if gs.current_save_slot:
         autosave_game(gs)
 
@@ -2267,7 +2446,9 @@ def run_game(stdscr, gs):
                     if isinstance(res, tuple) and res[0] == 'load':
                         gs = res[1]
                 else:
+                    # PARCHÉ: Reset del sistema de repetición para teclas no de movimiento
                     gs._last_key = None
+                    gs._next_repeat_time = 0.0
         else:
             if gs._last_key is not None and current_time > gs._next_repeat_time + 0.5:
                 gs._last_key = None
@@ -2289,7 +2470,7 @@ def run_game(stdscr, gs):
         move_enemies(gs)
 
         if gs.exit and gs.player and (gs.player.x, gs.player.y) == gs.exit:
-            # NUEVO: Autoguardado al completar nivel
+            # Autoguardado al completar nivel
             if gs.current_save_slot:
                 autosave_game(gs)
                 
@@ -2301,7 +2482,7 @@ def run_game(stdscr, gs):
             show_level_complete(stdscr, gs)
             gs.new_level()
             
-            # NUEVO: Autoguardado después de nuevo nivel
+            # Autoguardado después de nuevo nivel
             if gs.current_save_slot:
                 autosave_game(gs)
 
